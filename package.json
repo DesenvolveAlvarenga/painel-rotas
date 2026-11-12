@@ -1,0 +1,11 @@
+{
+  "name": "painel-de-rotas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Roteirização de entregas com mapa, rastreamento em tempo real e importação de planilha.",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/run.js"
+  },
+  "engines": { "node": ">=20" }
+}

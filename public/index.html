@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Painel de Rotas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="shell">
+  <header class="top">
+    <div class="brand">
+      <h1>Painel de Rotas</h1>
+      <span class="conn" id="conn" data-s="wait"><i></i><span id="connt">Conectando…</span></span>
+    </div>
+    <dl class="kpis" id="kpis"></dl>
+  </header>
+
+  <main class="main">
+    <section class="mapcol" aria-label="Mapa das entregas">
+      <div class="toolbar">
+        <button class="btn primary" id="btn-opt" type="button">Otimizar rotas</button>
+        <span class="hint" id="optnote"></span>
+      </div>
+      <div id="map" role="application" aria-label="Mapa"></div>
+    </section>
+
+    <aside class="side">
+      <div class="tabs" role="tablist">
+        <button role="tab" id="t-del" aria-selected="true" aria-controls="p-del" type="button">Entregas</button>
+        <button role="tab" id="t-imp" aria-selected="false" aria-controls="p-imp" type="button">Clientes</button>
+        <button role="tab" id="t-veh" aria-selected="false" aria-controls="p-veh" type="button">Frota</button>
+      </div>
+
+      <div class="panel" id="p-del" role="tabpanel" aria-labelledby="t-del">
+        <div class="summary" id="summary" hidden></div>
+        <details class="add" id="addbox" open>
+          <summary id="addsum">Nova entrega</summary>
+          <form class="form" id="dform" autocomplete="off">
+            <div class="field ac"><label for="f-client">Cliente (código ou nome)</label>
+              <input id="f-client" maxlength="120" role="combobox" aria-expanded="false" aria-controls="sugg" aria-autocomplete="list" placeholder="Digite o código ou o nome">
+              <div class="sugg" id="sugg" role="listbox" hidden></div>
+              <span class="hint" id="client-hint"></span></div>
+            <div class="field"><label for="f-addr">Endereço</label>
+              <div class="inline"><input id="f-addr" maxlength="300" placeholder="Rua, número, bairro, cidade"><button class="btn" id="btn-search" type="button">Buscar</button></div>
+              <span class="hint">Digite o endereço e aperte Enter ou Buscar. Escolha o resultado certo para ver a rota a partir do depósito.</span>
+            </div>
+            <div class="results" id="results"></div>
+            <div class="preview" id="preview" hidden></div>
+            <div class="two">
+              <div class="field"><label for="f-prio">Prioridade</label><select id="f-prio"><option value="normal">Normal</option><option value="alta">Alta</option></select></div>
+              <div class="field"><label for="f-notes">Observação</label><input id="f-notes" maxlength="300" placeholder="Opcional"></div>
+            </div>
+            <div class="inline"><button class="btn primary" id="btn-add" type="submit" style="flex:1">Adicionar entrega</button><button class="btn" id="btn-cancel" type="button" hidden>Cancelar</button></div>
+          </form>
+        </details>
+        <div id="dlist"></div>
+        <div><button class="btn small" id="btn-clear" type="button">Limpar o dia</button></div>
+      </div>
+
+      <div class="panel" id="p-imp" role="tabpanel" aria-labelledby="t-imp" hidden>
+        <div class="card">
+          <h3>Importar clientes do seu sistema</h3>
+          <p class="hint">Aceita .xls, .xlsx e .csv. O arquivo é lido no seu navegador, e só código, nome, endereço, bairro e CEP seguem para o sistema. Clientes com o mesmo código são atualizados, sem duplicar.</p>
+          <div class="field"><label for="f-file">Arquivo</label><input id="f-file" type="file" accept=".xls,.xlsx,.csv"></div>
+        </div>
+        <div class="card" id="mapping" hidden>
+          <h3>Quais colunas usar?</h3>
+          <div class="two">
+            <div class="field"><label for="m-code">Código do cliente</label><select id="m-code"></select></div>
+            <div class="field"><label for="m-client">Nome do cliente</label><select id="m-client"></select></div>
+          </div>
+          <div class="field"><label for="m-street">Endereço (rua e número)</label><select id="m-street"></select></div>
+          <div class="two">
+            <div class="field"><label for="m-bairro">Bairro</label><select id="m-bairro"></select></div>
+            <div class="field"><label for="m-cep">CEP</label><select id="m-cep"></select></div>
+          </div>
+          <div class="two">
+            <div class="field"><label for="m-city">Cidade (se tiver)</label><select id="m-city"></select></div>
+            <div class="field"><label for="m-uf">UF (se tiver)</label><select id="m-uf"></select></div>
+          </div>
+          <div class="field"><label for="m-notes">Observação (opcional)</label><select id="m-notes"></select></div>
+          <div class="checks"><label><input type="checkbox" id="m-also"> Já incluir todos nas entregas de hoje</label></div>
+          <div><h3>Como os clientes vão ficar</h3><table class="pv" id="m-preview"></table></div>
+          <p class="hint" id="m-hint"></p>
+          <button class="btn primary" id="btn-import" type="button">Importar clientes</button>
+        </div>
+        <div class="card" id="geoprog" hidden>
+          <h3 id="geotitle">Localizando endereços</h3>
+          <div class="progress"><i id="geobar"></i></div>
+          <p class="hint" id="geonote"></p>
+        </div>
+        <div class="card" id="failcard" hidden>
+          <h3 id="failtitle">Clientes não localizados</h3>
+          <p class="hint">Corrija o endereço ou marque o ponto no mapa. Fica salvo no cadastro e você não precisa repetir.</p>
+          <div id="faillist" style="display:grid;gap:10px"></div>
+        </div>
+        <div class="card">
+          <h3>Clientes cadastrados</h3>
+          <p id="reg-count" class="hint"></p>
+          <div><button class="btn small" id="btn-reg-clear" type="button">Apagar cadastro de clientes</button></div>
+        </div>
+      </div>
+
+      <div class="panel" id="p-veh" role="tabpanel" aria-labelledby="t-veh" hidden>
+        <form class="card" id="sform" autocomplete="off">
+          <h3>Depósito (ponto de saída e chegada)</h3>
+          <div class="field"><label for="s-depot">Endereço do depósito</label><input id="s-depot" maxlength="300" placeholder="Rua, número, bairro, cidade"></div>
+          <div class="field"><label for="s-suffix">Cidade e estado padrão (opcional)</label><input id="s-suffix" maxlength="100" placeholder="Ex.: Contagem, MG">
+            <span class="hint">Acrescentado à busca de todos os endereços. Ajuda quando a planilha não traz cidade.</span></div>
+          <p class="hint" id="s-status"></p>
+          <div class="inline"><button class="btn primary" type="submit" id="btn-settings" style="flex:1">Salvar e localizar</button><button class="btn" type="button" id="btn-depot-pick">Marcar no mapa</button></div>
+        </form>
+        <div id="vlist" style="display:grid;gap:10px"></div>
+        <form class="card" id="vform" autocomplete="off">
+          <h3 id="vtitle">Novo veículo</h3>
+          <div class="field"><label for="v-name">Nome</label><input id="v-name" maxlength="40" placeholder="Ex.: Van 1"></div>
+          <div class="two">
+            <div class="field"><label for="v-plate">Placa</label><input id="v-plate" maxlength="12" placeholder="ABC1D23"></div>
+            <div class="field"><label for="v-driver">Motorista</label><input id="v-driver" maxlength="60" placeholder="Nome"></div>
+          </div>
+          <div class="inline"><button class="btn primary" type="submit" id="btn-vsave" style="flex:1">Cadastrar veículo</button><button class="btn" type="button" id="btn-vcancel" hidden>Cancelar</button></div>
+        </form>
+      </div>
+    </aside>
+  </main>
+</div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="/clean.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

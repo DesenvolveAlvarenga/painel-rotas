@@ -1,0 +1,16 @@
+# Dependências
+node_modules/
+
+# Dados gerados em tempo de execução (podem conter endereços de clientes)
+data/
+
+# Variáveis de ambiente / segredos
+.env
+.env.*
+
+# Logs e sistema
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/

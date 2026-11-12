@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rota do motorista</title>
+<style>
+:root{--bg:#eef1f3;--surface:#fff;--ink:#12202b;--muted:#566673;--line:#d6dde2;--accent:#1456d6;--accent-ink:#fff;--good:#12834f;--alta:#d4351c;--warn:#a55a00;color-scheme:light}
+@media (prefers-color-scheme: dark){:root{--bg:#0e1720;--surface:#16222d;--ink:#e7eef3;--muted:#93a4b1;--line:#2a3b49;--accent:#6aa2ff;--accent-ink:#0b1722;--good:#46c488;--alta:#ff7b66;--warn:#f0b35a;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;padding:16px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-bottom:calc(24px + env(safe-area-inset-bottom,0px))}
+main{max-width:560px;margin:0 auto;display:grid;gap:14px}
+h1{font-size:20px;margin:0}
+.muted{color:var(--muted);font-size:14px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;display:grid;gap:10px}
+.big{font-size:22px;font-weight:700;line-height:1.2;overflow-wrap:anywhere}
+.btn{font:600 16px system-ui,sans-serif;min-height:48px;padding:10px 16px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer;text-decoration:none;display:flex;align-items:center;justify-content:center;text-align:center}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+.btn[disabled]{opacity:.55}
+.acts{display:grid;gap:8px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.chip{display:inline-block;font-size:13px;padding:2px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+.chip.alta{color:var(--alta);border-color:currentColor}
+.chip.ok{color:var(--good);border-color:currentColor}
+.chip.warn{color:var(--warn);border-color:currentColor}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+ol{margin:0;padding-left:22px;display:grid;gap:6px}
+li.done{text-decoration:line-through;color:var(--muted)}
+.gps{display:flex;align-items:center;gap:8px;font-size:14px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--muted)}
+.dot.on{background:var(--good)} .dot.err{background:var(--alta)}
+#msg{font-size:14px;color:var(--warn)}
+</style>
+</head>
+<body>
+<main>
+  <header><h1 id="title">Rota do motorista</h1><p class="muted" id="sub">Carregando…</p></header>
+  <section class="card">
+    <div class="gps"><span class="dot" id="dot"></span><span id="gpstext">Localização não compartilhada</span></div>
+    <button class="btn primary" id="btn-gps" type="button">Compartilhar minha localização</button>
+    <p class="muted">Mantenha esta tela aberta durante a rota para o despachante acompanhar o veículo.</p>
+    <p id="msg"></p>
+  </section>
+  <section id="next"></section>
+  <section class="card" id="listbox" hidden><b>Paradas</b><ol id="list"></ol></section>
+</main>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+function h(tag, props = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) { if (v == null || v === false) continue; if (k.startsWith('on')) n.addEventListener(k.slice(2), v); else if (k === 'class') n.className = v; else n.setAttribute(k, v === true ? '' : v); }
+  for (const c of kids.flat()) { if (c == null || c === false) continue; n.append(c.nodeType ? c : document.createTextNode(String(c))); }
+  return n;
+}
+const token = location.pathname.split('/').pop();
+const fmtMin = m => (m < 60 ? Math.round(m) + ' min' : Math.floor(m / 60) + ' h ' + String(Math.round(m % 60)).padStart(2, '0'));
+let data = null, watchId = null, lastPos = null, lastSent = 0, sharing = false, wake = null;
+
+async function call(path, body) {
+  const r = await fetch('/api/driver/' + token + (path ? '/' + path : ''), body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Erro ' + r.status);
+  return j;
+}
+async function load() {
+  try { data = await call(''); render(); $('#msg').textContent = ''; }
+  catch (e) { $('#sub').textContent = e.message; $('#next').replaceChildren(); $('#listbox').hidden = true; }
+}
+function render() {
+  const v = data.vehicle;
+  $('#title').textContent = v.name + (v.plate ? ' · ' + v.plate : '');
+  $('#sub').textContent = v.driver ? 'Motorista: ' + v.driver : 'Sua rota de hoje';
+  const pend = data.stops.filter(s => s.status === 'pendente'), done = data.stops.length - pend.length, box = $('#next');
+  box.replaceChildren();
+  if (!data.stops.length) { box.append(h('div', { class: 'card' }, h('div', { class: 'big' }, 'Sem entregas por enquanto'), h('p', { class: 'muted' }, 'Quando o despachante gerar as rotas, elas aparecem aqui.'))); $('#listbox').hidden = true; return; }
+  if (!pend.length) { box.append(h('div', { class: 'card' }, h('div', { class: 'big' }, 'Rota concluída'), h('p', { class: 'muted' }, done + ' de ' + data.stops.length + ' entregas feitas. Volte ao depósito.'))); }
+  else {
+    const s = pend[0];
+    const dest = s.lat + ',' + s.lng;
+    box.append(h('div', { class: 'card' },
+      h('span', { class: 'muted' }, 'Próxima parada · ' + (done + 1) + ' de ' + data.stops.length),
+      h('div', { class: 'big' }, s.client), h('div', {}, s.address),
+      s.notes ? h('div', { class: 'muted' }, 'Obs.: ' + s.notes) : null,
+      h('div', { class: 'chips' }, s.priority === 'alta' ? h('span', { class: 'chip alta' }, 'Prioridade alta') : null, s.etaMin != null ? h('span', { class: 'chip' }, 'Chegada em cerca de ' + fmtMin(s.etaMin)) : null),
+      s.lat != null ? h('div', { class: 'two' },
+        h('a', { class: 'btn', href: 'https://waze.com/ul?ll=' + dest + '&navigate=yes', target: '_blank', rel: 'noopener' }, 'Abrir no Waze'),
+        h('a', { class: 'btn', href: 'https://www.google.com/maps/dir/?api=1&destination=' + dest + '&travelmode=driving', target: '_blank', rel: 'noopener' }, 'Google Maps')) : null,
+      h('button', { class: 'btn primary', type: 'button', onclick: ev => deliver(s, ev.target) }, 'Entreguei')));
+  }
+  const ol = $('#list'); ol.replaceChildren();
+  data.stops.forEach(s => ol.append(h('li', { class: s.status === 'entregue' ? 'done' : '' }, s.client + ' · ' + s.address)));
+  $('#listbox').hidden = false;
+}
+async function deliver(s, btn) {
+  btn.disabled = true;
+  try { await call('deliver', { id: s.id }); await load(); } catch (e) { $('#msg').textContent = e.message; btn.disabled = false; }
+}
+function setGps(state, text) { $('#dot').className = 'dot ' + state; $('#gpstext').textContent = text; }
+async function send() {
+  if (!lastPos) return;
+  try { await call('position', lastPos); lastSent = Date.now(); setGps('on', 'Localização enviada às ' + new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })); }
+  catch (e) { setGps('err', 'Não consegui enviar a localização. Tentando de novo…'); }
+}
+function startGps() {
+  if (!navigator.geolocation) { $('#msg').textContent = 'Este navegador não oferece GPS.'; return; }
+  sharing = true; $('#btn-gps').hidden = true; setGps('', 'Procurando sinal de GPS…');
+  watchId = navigator.geolocation.watchPosition(p => {
+    lastPos = { lat: p.coords.latitude, lng: p.coords.longitude };
+    if (Date.now() - lastSent > 5000) send();
+  }, err => {
+    sharing = false; $('#btn-gps').hidden = false;
+    setGps('err', err.code === 1 ? 'Permissão de localização negada.' : 'Sem sinal de GPS.');
+    $('#msg').textContent = err.code === 1 ? 'Libere a localização para este site nas configurações do navegador e toque de novo no botão.' : 'Vá para um local aberto e tente de novo.';
+  }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+  if (navigator.wakeLock) navigator.wakeLock.request('screen').then(l => { wake = l; }).catch(() => {});
+}
+$('#btn-gps').addEventListener('click', startGps);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && sharing && navigator.wakeLock) navigator.wakeLock.request('screen').then(l => { wake = l; }).catch(() => {}); });
+setInterval(() => { if (sharing && lastPos && Date.now() - lastSent > 20000) send(); }, 5000);
+setInterval(load, 20000);
+load();
+</script>
+</body>
+</html>
