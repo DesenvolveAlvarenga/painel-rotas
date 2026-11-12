@@ -262,9 +262,13 @@ function pickBest(res, ctx) {
   let best = null, bs = -1;
   for (const r of res) {
     if (ctx.stateName && r.state && norm(r.state) !== norm(ctx.stateName)) continue;
+    const pc = String(r.postcode || '').replace(/\D/g, '');
+    /* Busca pela rua: se o CEP da planilha aponta para outra região (3 primeiros dígitos), é uma rua de mesmo nome em outro lugar. */
+    if (ctx.strict && ctx.prefix && pc.length >= 3 && pc.slice(0, 3) !== ctx.prefix.slice(0, 3)) continue;
     let s = 1;
-    if (ctx.prefix && r.postcode && String(r.postcode).replace(/\D/g, '').startsWith(ctx.prefix)) s += 4;
+    if (ctx.prefix && pc.startsWith(ctx.prefix)) s += 4;
     if (ctx.city && r.city && norm(r.city) === norm(ctx.city)) s += 2;
+    if (ctx.bairro && norm(r.label).includes(norm(ctx.bairro))) s += 3;
     if (s > bs) { bs = s; best = r; }
   }
   return best;
@@ -300,7 +304,7 @@ async function geocodeClient(c) {
     return null;
   }
   if (street) {
-    const ctx = { stateName, city, prefix: cep.length >= 5 ? cep.slice(0, 5) : '' };
+    const ctx = { stateName, city, bairro, strict: true, prefix: cep.length >= 5 ? cep.slice(0, 5) : '' };
     const tries = [];
     if (number && city) tries.push({ q: { street: number + ' ' + street, city, ...(stateName ? { state: stateName } : {}) }, approx: false });
     tries.push({ q: [street + (number ? ', ' + number : ''), bairro, city, stateName].filter(Boolean).join(', '), approx: false });
