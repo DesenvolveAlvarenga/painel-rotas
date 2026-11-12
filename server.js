@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const Clean = require('./public/clean.js');
+const { createStore } = require('./storage.js');
 
 const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -31,18 +32,29 @@ const UA = 'PainelDeRotas/1.0' + (CONTACT_EMAIL ? ' (' + CONTACT_EMAIL + ')' : '
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 /* ---------------- armazenamento ---------------- */
-const FILE = path.join(DATA_DIR, 'data.json');
+const store = createStore(DATA_DIR);
 let db = { vehicles: [], deliveries: [], clients: [], cepcache: {}, depot: null, settings: { suffix: '' }, routes: {}, summary: null, geocache: {} };
-try { db = { ...db, ...JSON.parse(fs.readFileSync(FILE, 'utf8')) }; } catch (e) { /* primeiro uso */ }
-let saveTimer = null;
-function writeNow() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const tmp = FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(db));
-  fs.renameSync(tmp, FILE);
+/* Grava no máximo uma vez a cada store.delayMs; alterações feitas durante a gravação geram outra em seguida. */
+let saveTimer = null, saving = null, dirty = false;
+async function flush() {
+  if (saving) { dirty = true; return saving; }
+  dirty = false;
+  saving = store.save(JSON.stringify(db)).catch(e => { console.error('Falha ao salvar:', e.message); dirty = true; })
+    .finally(() => { saving = null; if (dirty) persist(); });
+  return saving;
 }
-function persist() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { try { writeNow(); } catch (e) { console.error('Falha ao salvar:', e.message); } }, 300); }
-for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { writeNow(); } catch (e) { /* ignora */ } process.exit(0); });
+function persist() {
+  dirty = true;
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => { saveTimer = null; flush(); }, store.delayMs);
+}
+let stopping = false;
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, async () => {
+  if (stopping) return; stopping = true;
+  clearTimeout(saveTimer);
+  try { if (saving) await saving; if (store.saveSync) store.saveSync(JSON.stringify(db)); else await store.save(JSON.stringify(db)); } catch (e) { console.error('Falha ao salvar:', e.message); }
+  process.exit(0);
+});
 
 /* ---------------- tempo real (SSE) ---------------- */
 const clients = new Set();
@@ -708,8 +720,17 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log('Painel de Rotas em http://localhost:' + PORT + (ADMIN_PASSWORD ? '' : '  (ATENÇÃO: sem senha. Defina ADMIN_PASSWORD antes de publicar.)'));
-  db.clients.filter(c => c.geoStatus === 'pendente').forEach(c => enqueueClientGeo(c.id));
-  db.deliveries.filter(d => d.geoStatus === 'pendente' && !d.clientId).forEach(d => runGeo(d.id));
-});
+(async () => {
+  try {
+    const saved = await store.load();
+    if (saved) db = { ...db, ...saved };
+  } catch (e) {
+    console.error('Não foi possível carregar os dados (' + store.kind + '): ' + e.message);
+    process.exit(1);
+  }
+  server.listen(PORT, () => {
+    console.log('Painel de Rotas em http://localhost:' + PORT + ' (dados: ' + store.kind + ')' + (ADMIN_PASSWORD ? '' : '  (ATENÇÃO: sem senha. Defina ADMIN_PASSWORD antes de publicar.)'));
+    db.clients.filter(c => c.geoStatus === 'pendente').forEach(c => enqueueClientGeo(c.id));
+    db.deliveries.filter(d => d.geoStatus === 'pendente' && !d.clientId).forEach(d => runGeo(d.id));
+  });
+})();

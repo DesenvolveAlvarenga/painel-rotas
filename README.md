@@ -19,21 +19,38 @@ Para conferir o servidor sem internet: `npm test` (usa serviços de mapa simulad
 ## Publicar na nuvem (para os motoristas acessarem)
 O GPS do celular só funciona em endereço seguro (https), que os serviços de hospedagem abaixo já fornecem.
 
-1. Crie uma conta no GitHub e envie esta pasta para um repositório privado.
-2. Crie uma conta em um serviço que rode aplicativos Node.js (por exemplo Render, Railway ou Fly.io) e crie um novo "Web Service" ligado a esse repositório.
-3. Comando de início: `npm start` (não há nada para instalar).
-4. Configure as variáveis de ambiente:
+### Opção gratuita: Render + Supabase
+Os dados ficam num banco Postgres gratuito (Supabase), porque o plano gratuito do Render não guarda arquivos entre reinícios.
+
+**Banco (Supabase)**
+1. Crie uma conta em supabase.com e um novo projeto (região São Paulo). Anote a senha do banco.
+2. No projeto, clique em **Connect** e copie a string de conexão do **Session pooler** (começa com `postgresql://postgres.` e termina em `:5432/postgres`). Troque `[YOUR-PASSWORD]` pela senha. Se a senha tiver símbolos como `@`, `#` ou `/`, crie outra só com letras e números.
+3. A tabela é criada sozinha na primeira vez que o app sobe.
+
+**Aplicativo (Render)**
+1. Crie uma conta em render.com, clique em **New → Web Service** e escolha este repositório do GitHub.
+2. Build command: `npm install`. Start command: `npm start`. Plano: **Free**.
+3. Em **Environment**, cadastre as variáveis da tabela abaixo (no mínimo `DATABASE_URL`, `ADMIN_PASSWORD` e `CONTACT_EMAIL`).
+4. Abra o endereço `https://...onrender.com` gerado, digite a senha e siga o passo 4 da seção anterior. Na aba **Frota**, copie o link de cada veículo e mande para o motorista.
+
+**Levar os dados que já estão no seu computador:** com o banco ainda vazio, rode o app uma vez localmente apontando para ele (PowerShell: `$env:DATABASE_URL="postgresql://..."; npm start`). Ele envia o `data/data.json` para o banco e passa a usar o banco. Feche com Ctrl+C.
+
+**Limites do plano gratuito** (confira as regras atuais nos sites):
+- O Render "dorme" após uns 15 minutos sem nenhum acesso; o primeiro acesso depois disso demora cerca de 1 minuto. Enquanto alguém usa o painel ou um motorista envia GPS, ele fica acordado.
+- O Supabase pausa projetos gratuitos que ficam cerca de uma semana sem uso; é só reativar no painel.
+
+### Variáveis de ambiente
 
 | Variável | Para quê | Exemplo |
 |---|---|---|
+| `DATABASE_URL` | Banco Postgres onde ficam os dados. Sem ela, os dados ficam no arquivo `data/data.json` | `postgresql://postgres.xxx:senha@...pooler.supabase.com:5432/postgres` |
 | `ADMIN_PASSWORD` | Senha do painel (obrigatória na nuvem). Usuário: qualquer um. | `uma-senha-forte` |
 | `CONTACT_EMAIL` | Seu e-mail, exigido pelo serviço gratuito de busca de endereços | `voce@empresa.com.br` |
-| `DATA_DIR` | Pasta onde ficam os dados. Aponte para um disco persistente | `/var/data` |
+| `DATA_DIR` | Só sem banco: pasta do arquivo de dados, num disco persistente | `/var/data` |
 | `GOOGLE_MAPS_KEY` | Opcional. Chave da Geocoding API do Google para localizar clientes com mais precisão | `AIza...` |
 | `COUNTRY_CODES` | Limita a busca ao país (padrão `br`) | `br` |
 
-5. **Importante:** sem disco persistente, os dados são apagados a cada atualização do aplicativo. Escolha um plano que ofereça disco e monte-o no caminho de `DATA_DIR`. Confira os preços atuais no site do provedor.
-6. Abra o endereço que o provedor gerar, digite a senha e siga o passo 4 da seção anterior. Na aba **Frota**, copie o link de cada veículo e mande para o motorista.
+Com banco, as alterações são gravadas no máximo a cada 4 segundos (`SAVE_EVERY_MS`). Sem banco e sem disco persistente, os dados são apagados a cada atualização do aplicativo.
 
 ## Clientes e planilha
 Na aba **Clientes**, escolha o arquivo. O sistema reconhece sozinho as colunas Código, Cliente, Endereço, Bairro e CEP (e Cidade e UF, se existirem), ignora colunas vazias e mostra como cada cliente vai ficar antes de importar. Só essas informações entram no sistema.
@@ -60,4 +77,4 @@ A busca gratuita (OpenStreetMap) erra ou não conhece algumas ruas e números do
 - A precisão de endereços com número varia por cidade. Quando o número não é achado, o sistema marca a entrega como "Posição aproximada".
 - A ordem das paradas é calculada com distância estimada em linha reta; as distâncias e horários exibidos nas rotas vêm do cálculo pelas ruas.
 - Senha única para o painel. Cada motorista acessa só pelo link pessoal; trate o link como senha.
-- Os dados ficam em um arquivo no disco. Para várias empresas ou muito volume, o próximo passo seria um banco de dados.
+- Todos os dados ficam num único registro (arquivo ou banco). Serve bem para uma empresa; para várias empresas ou muito volume, o próximo passo seria separar em tabelas.
