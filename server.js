@@ -23,6 +23,11 @@ const GOOGLE_URL = process.env.GOOGLE_GEOCODE_URL || 'https://maps.googleapis.co
 const CONTACT_EMAIL = process.env.CONTACT_EMAIL || '';
 const COUNTRY_CODES = process.env.COUNTRY_CODES === undefined ? 'br' : process.env.COUNTRY_CODES;
 const GEO_GAP_MS = process.env.GEO_GAP_MS === undefined ? 1100 : Number(process.env.GEO_GAP_MS);
+const envNum = (k, d) => (process.env[k] === undefined || process.env[k] === '' ? d : Number(process.env[k]));
+const GEO_RETRIES = envNum('GEO_RETRIES', 2);              // novas tentativas imediatas por consulta
+const GEO_RETRY_MS = envNum('GEO_RETRY_MS', 5000);         // espera base entre elas (x3 em caso de 429)
+const GEO_REQUEUE_TRIES = envNum('GEO_REQUEUE_TRIES', 3);  // rodadas por cliente antes de marcar "indisponível"
+const GEO_REQUEUE_MS = envNum('GEO_REQUEUE_MS', 120000);   // espera antes de cada nova rodada (2, 4 min...)
 const SERVICE_MIN = 4;
 const SPEED_KMH = 30;
 const DETOUR = 1.3;
@@ -153,9 +158,24 @@ async function pumpGeo() {
     const wait = lastGeo + GEO_GAP_MS - Date.now();
     if (wait > 0) await sleep(wait);
     lastGeo = Date.now();
-    try { job.resolve(await nominatim(job.q, job.limit)); } catch (e) { job.reject(e); }
+    try { job.resolve(await nominatimRetry(job.q, job.limit)); } catch (e) { job.reject(e); }
   }
   geoBusy = false;
+}
+/* Falha passageira (429 "devagar", 5xx, sem resposta): espera e tenta de novo, segurando a fila inteira
+   para não insistir no serviço. 403 é bloqueio e não adianta repetir. */
+async function nominatimRetry(q, limit) {
+  for (let i = 0; ; i++) {
+    try { return await nominatim(q, limit); }
+    catch (e) {
+      const st = e.status || 0, passageira = !st || st === 429 || st >= 500;
+      if (st === 403) console.error('Busca de endereços recusada pelo OpenStreetMap (403, bloqueio). Confira se CONTACT_EMAIL está definida.');
+      if (!passageira || i >= GEO_RETRIES) throw e;
+      const ms = GEO_RETRY_MS * (i + 1) * (st === 429 ? 3 : 1);
+      console.warn('Busca de endereços: ' + e.message + '. Nova tentativa em ' + Math.round(ms / 1000) + 's.');
+      await sleep(ms); lastGeo = Date.now();
+    }
+  }
 }
 async function nominatim(q, limit) {
   const u = new URL(NOMINATIM_URL + '/search');
@@ -163,7 +183,7 @@ async function nominatim(q, limit) {
   u.searchParams.set('format', 'jsonv2'); u.searchParams.set('addressdetails', '1'); u.searchParams.set('limit', String(limit));
   if (COUNTRY_CODES) u.searchParams.set('countrycodes', COUNTRY_CODES);
   const r = await fetch(u, { headers: { 'User-Agent': UA, 'Accept-Language': 'pt-BR' }, signal: AbortSignal.timeout(15000) });
-  if (!r.ok) throw new Error('geocoder ' + r.status);
+  if (!r.ok) { const e = new Error('serviço respondeu ' + r.status); e.status = r.status; throw e; }
   const j = await r.json();
   return j.map(x => { const a = x.address || {}; return { label: x.display_name, lat: Number(x.lat), lng: Number(x.lon), postcode: a.postcode || '', state: a.state || '', city: a.city || a.town || a.village || a.municipality || '' }; }).filter(x => validLat(x.lat) && validLng(x.lng));
 }
@@ -220,6 +240,7 @@ async function runGeo(id, force) {
     if (r) { Object.assign(d, { lat: r.lat, lng: r.lng, label: r.label, approx: r.approx, geoStatus: 'ok', geoError: '' }); }
     else { Object.assign(d, { geoStatus: 'falhou', geoError: 'Endereço não encontrado' }); }
   } catch (e) {
+    console.error('Busca de endereço da entrega falhou: ' + e.message);
     Object.assign(d, { geoStatus: 'falhou', geoError: 'Serviço de busca indisponível. Tente de novo.' });
   }
   changed();
@@ -335,12 +356,26 @@ async function runGeoClient(id) {
     const r = await geocodeClient(c);
     if (r) { Object.assign(c, { lat: r.lat, lng: r.lng, label: r.label, approx: r.approx, geoStatus: 'ok', geoError: '', geoSource: r.source, city: r.city || c.city, uf: r.uf || c.uf }); c.address = Clean.fmtAddress(c); }
     else Object.assign(c, { geoStatus: 'falhou', geoError: 'Endereço não encontrado no mapa' });
+    c.geoTries = 0;
   } catch (e) {
-    Object.assign(c, { geoStatus: 'falhou', geoError: GOOGLE_KEY && /REQUEST_DENIED|google http 4/.test(e.message) ? 'Chave do Google recusada. Confira a chave e se a Geocoding API está ativada.' : 'Serviço de busca indisponível. Tente de novo.' });
+    const keyDenied = GOOGLE_KEY && /REQUEST_DENIED|google http 4/.test(e.message);
+    console.error('Busca do cliente ' + (c.code || c.name) + ' falhou: ' + e.message);
+    c.geoTries = (c.geoTries || 0) + 1;
+    if (!keyDenied && c.geoTries < GEO_REQUEUE_TRIES) {
+      /* Problema no serviço, não no endereço: continua pendente e tenta de novo mais tarde, sozinho. */
+      const ms = GEO_REQUEUE_MS * c.geoTries;
+      c.geoError = '';
+      setTimeout(() => enqueueClientGeo(c.id), ms).unref();
+      changed(); return;
+    }
+    c.geoTries = 0;
+    Object.assign(c, { geoStatus: 'falhou', geoError: keyDenied ? 'Chave do Google recusada. Confira a chave e se a Geocoding API está ativada.' : 'Serviço de busca indisponível. Tente de novo.' });
   }
   applyClientGeo(c); changed();
 }
 function resumePending() {
+  /* Clientes que falharam por problema no serviço (não no endereço) voltam para a fila. */
+  for (const c of db.clients) if (c.geoStatus === 'falhou' && /^Serviço de busca indisponível/.test(c.geoError || '')) Object.assign(c, { geoStatus: 'pendente', geoError: '', geoTries: 0 });
   db.clients.filter(c => c.geoStatus === 'pendente').forEach(c => enqueueClientGeo(c.id));
   db.deliveries.filter(d => d.geoStatus === 'pendente' && !d.clientId).forEach(d => runGeo(d.id));
 }

@@ -28,6 +28,9 @@ const fake = http.createServer((req, res) => {
   if (u.pathname === '/search') {
     const q = u.searchParams.get('q'); fake.geoCalls = (fake.geoCalls || 0) + 1;
     fake.qlog.push(q === null ? JSON.stringify(Object.fromEntries(u.searchParams)) : q);
+    const all = fake.qlog[fake.qlog.length - 1];
+    if (/Instavel/i.test(all) && (fake.instavel = (fake.instavel || 0) + 1) <= 4) { res.statusCode = 503; return res.end('[]'); }
+    if (/Sempre Fora/i.test(all)) { fake.foraCalls = (fake.foraCalls || 0) + 1; res.statusCode = 503; return res.end('[]'); }
     if (q && /Teste Estado/i.test(q)) return res.end(JSON.stringify([
       { display_name: 'Rua Teste Estado, 10, SP', lat: '-23.0', lon: '-46.0', address: { state: 'São Paulo', postcode: '12345-000' } },
       { display_name: 'Rua Teste Estado, 10, MS', lat: '-20.0', lon: '-54.0', address: { state: 'Mato Grosso do Sul', postcode: '79953-100' } }]));
@@ -57,7 +60,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
   const fport = fake.address().port, dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rotas-'));
   const port = 3900 + Math.floor(Math.random() * 90), base = 'http://localhost:' + port;
   const srv = spawn('node', [path.join(__dirname, '..', 'server.js')], {
-    env: { ...process.env, PORT: port, DATA_DIR: dir, ADMIN_PASSWORD: 'segredo', GEO_GAP_MS: '0', NOMINATIM_URL: 'http://localhost:' + fport, OSRM_URL: 'http://localhost:' + fport, CEP_URL: 'http://localhost:' + fport + '/cep', VIACEP_URL: 'http://localhost:' + fport + '/viacep' }, stdio: ['ignore', 'inherit', 'inherit']
+    env: { ...process.env, PORT: port, DATA_DIR: dir, ADMIN_PASSWORD: 'segredo', GEO_GAP_MS: '0', GEO_RETRY_MS: '0', GEO_REQUEUE_MS: '200', NOMINATIM_URL: 'http://localhost:' + fport, OSRM_URL: 'http://localhost:' + fport, CEP_URL: 'http://localhost:' + fport + '/cep', VIACEP_URL: 'http://localhost:' + fport + '/viacep' }, stdio: ['ignore', 'inherit', 'inherit']
   });
   const auth = { Authorization: 'Basic ' + Buffer.from('admin:segredo').toString('base64') };
   const call = async (method, p, body, headers = auth) => {
@@ -226,6 +229,15 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     assert.strictEqual(fake.cepCalls || 0, 0); ok('consulta de CEP repetida vem da memória');
     r = await call('PATCH', '/api/clients/' + c5.id, { street: 'RUA TESTE ESTADO, 12', cep: '79953076' }); await waitGeo(); await wait(300);
     assert.ok(Math.abs((await get5('5005')).lat + 20.0) < 0.01); ok('corrigir o endereço de um cliente busca de novo');
+
+    r = await call('POST', '/api/clients/import', { rows: [
+      { code: '7001', client: 'Cliente Instavel', street: 'Rua Instavel 10', city: 'Contagem', uf: 'MG' },
+      { code: '7002', client: 'Cliente Fora', street: 'Rua Sempre Fora 20', city: 'Contagem', uf: 'MG' }] });
+    for (let i = 0; i < 100 && (await call('GET', '/api/state')).body.geoPending; i++) await wait(100);
+    const ci = (await call('GET', '/api/clients/search?q=7001')).body.results[0];
+    assert.strictEqual(ci.geoStatus, 'ok'); assert.ok(fake.instavel >= 5); ok('serviço de busca falhando por um tempo: espera, tenta de novo e localiza o cliente');
+    const cf = (await call('GET', '/api/clients/failed')).body.clients.find(x => x.code === '7002');
+    assert.ok(cf && /indisponível/.test(cf.error)); assert.strictEqual(fake.foraCalls, 9); ok('serviço sempre fora: desiste após 3 rodadas de 3 tentativas e avisa');
 
     // Google (opcional)
     const gport = port + 100, gdir = fs.mkdtempSync(path.join(os.tmpdir(), 'rotasg-'));
