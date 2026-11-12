@@ -40,7 +40,9 @@
     if (!/[\p{L}\d]/u.test(s)) return { street: '', number: '', tail: '', km: '' };
     s = s.replace(/([A-Za-zÀ-ÿ])\.(?=[A-Za-zÀ-ÿ])/g, '$1 ');
     s = s.replace(/(^|[\s,.\/-])(?:S\/?N|S\.N\.?|SEM\s+N[ÚU]MERO)[º°]?(?=$|[\s,.\/-])/gi, '$1');
-    s = s.replace(/(\d)[\s,;-]*(?:APT?O?\.?|APARTAMENTO|AP\.?|BLOCO|BL\.?|LOJA|SALA|CJ\.?|CONJ\.?|ANDAR|FUNDOS|CASA|GALP[ÃA]O|LOTE|LT\.?|QD\.?|QUADRA|NEXO|ANEXO|T[ÉE]RREO)\b.*$/i, '$1');
+    /* lote/quadra com número não são o número da casa ("AV RIO BRANCO LOTE 13") */
+    s = s.replace(/[\s,;-]+(?:LOTE|LT\.?|QD\.?|QUADRA)\s*\d+[A-Za-z]?\b/gi, '');
+    s = s.replace(/(\d)[\s,;-]*(?:APT?O?\.?|APARTAMENTO|AP\.?|BLOCO|BL\.?|LOJA|SALA|CJ\.?|CONJ\.?|ANDAR|FUNDOS|CASA|GALP[ÃA]O|GALP\.?|GLP\.?|LOTE|LT\.?|QD\.?|QUADRA|NEXO|ANEXO|T[ÉE]RREO)\b.*$/i, '$1');
     s = s.replace(/(\d)\s*\/.*$/, '$1');
     let number = '', km = '', before = s, tail = '';
     const found = [...s.matchAll(/\d+/g)];
