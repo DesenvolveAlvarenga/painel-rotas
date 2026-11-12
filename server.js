@@ -33,13 +33,37 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 
 /* ---------------- armazenamento ---------------- */
 const store = createStore(DATA_DIR);
-let db = { vehicles: [], deliveries: [], clients: [], cepcache: {}, depot: null, settings: { suffix: '' }, routes: {}, summary: null, geocache: {} };
+const emptyDb = () => ({ vehicles: [], deliveries: [], clients: [], cepcache: {}, depot: null, settings: { suffix: '' }, routes: {}, summary: null, geocache: {} });
+let db = emptyDb();
 /* Grava no máximo uma vez a cada store.delayMs; alterações feitas durante a gravação geram outra em seguida. */
-let saveTimer = null, saving = null, dirty = false;
+let saveTimer = null, saving = null, dirty = false, saveProblem = '';
+function setSaveProblem(msg) {
+  if (msg === saveProblem) return;
+  saveProblem = msg;
+  broadcast('state', publicState());
+}
+/* Outra cópia do app gravou no banco depois de nós: em vez de sobrescrever, adota o que está no banco. */
+async function reloadFromStore() {
+  console.error('Outra cópia do app gravou no banco. Recarregando os dados do banco em vez de sobrescrever.');
+  const fresh = await store.reload();
+  db = { ...emptyDb(), ...(fresh || {}) };
+  clientQ.length = 0;
+  resumePending();
+  broadcast('state', publicState()); broadcast('routes', { at: Date.now() });
+}
 async function flush() {
   if (saving) { dirty = true; return saving; }
   dirty = false;
-  saving = store.save(JSON.stringify(db)).catch(e => { console.error('Falha ao salvar:', e.message); dirty = true; })
+  saving = store.save(JSON.stringify(db))
+    .then(() => setSaveProblem(''))
+    .catch(async e => {
+      if (e.code === 'CONFLITO') {
+        try { await reloadFromStore(); setSaveProblem(''); } catch (e2) { console.error('Falha ao recarregar:', e2.message); setSaveProblem('Não foi possível ler o banco de dados. As alterações podem não estar sendo salvas.'); dirty = true; }
+        return;
+      }
+      console.error('Falha ao salvar:', e.message); dirty = true;
+      setSaveProblem('Não foi possível salvar no banco de dados. Tentando de novo…');
+    })
     .finally(() => { saving = null; if (dirty) persist(); });
   return saving;
 }
@@ -52,7 +76,8 @@ let stopping = false;
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, async () => {
   if (stopping) return; stopping = true;
   clearTimeout(saveTimer);
-  try { if (saving) await saving; if (store.saveSync) store.saveSync(JSON.stringify(db)); else await store.save(JSON.stringify(db)); } catch (e) { console.error('Falha ao salvar:', e.message); }
+  try { if (saving) await saving; if (store.saveSync) store.saveSync(JSON.stringify(db)); else await store.save(JSON.stringify(db)); }
+  catch (e) { console.error(e.code === 'CONFLITO' ? 'Ao encerrar: outra cópia do app já gravou no banco; nada foi sobrescrito.' : 'Falha ao salvar: ' + e.message); }
   process.exit(0);
 });
 
@@ -63,7 +88,8 @@ function publicState() {
   return {
     vehicles: db.vehicles, deliveries: db.deliveries, depot: db.depot, settings: db.settings, summary: db.summary,
     geoPending: db.deliveries.filter(d => d.geoStatus === 'pendente' && !d.clientId).length + db.clients.filter(c => c.geoStatus === 'pendente').length,
-    clientCount: db.clients.length, clientFailed: db.clients.filter(c => c.geoStatus === 'falhou').length
+    clientCount: db.clients.length, clientFailed: db.clients.filter(c => c.geoStatus === 'falhou').length,
+    storageWarning: store.temporary ? 'Os dados estão num arquivo temporário e serão APAGADOS quando o servidor reiniciar. Configure a variável DATABASE_URL (veja o README).' : saveProblem
   };
 }
 function broadcast(type, data) {
@@ -309,6 +335,10 @@ async function runGeoClient(id) {
     Object.assign(c, { geoStatus: 'falhou', geoError: GOOGLE_KEY && /REQUEST_DENIED|google http 4/.test(e.message) ? 'Chave do Google recusada. Confira a chave e se a Geocoding API está ativada.' : 'Serviço de busca indisponível. Tente de novo.' });
   }
   applyClientGeo(c); changed();
+}
+function resumePending() {
+  db.clients.filter(c => c.geoStatus === 'pendente').forEach(c => enqueueClientGeo(c.id));
+  db.deliveries.filter(d => d.geoStatus === 'pendente' && !d.clientId).forEach(d => runGeo(d.id));
 }
 const clientQ = []; let clientBusy = false;
 function enqueueClientGeo(id) { if (!clientQ.includes(id)) clientQ.push(id); pumpClients(); }
@@ -730,7 +760,7 @@ const server = http.createServer(async (req, res) => {
   }
   server.listen(PORT, () => {
     console.log('Painel de Rotas em http://localhost:' + PORT + ' (dados: ' + store.kind + ')' + (ADMIN_PASSWORD ? '' : '  (ATENÇÃO: sem senha. Defina ADMIN_PASSWORD antes de publicar.)'));
-    db.clients.filter(c => c.geoStatus === 'pendente').forEach(c => enqueueClientGeo(c.id));
-    db.deliveries.filter(d => d.geoStatus === 'pendente' && !d.clientId).forEach(d => runGeo(d.id));
+    if (store.temporary) console.error('ATENÇÃO: sem DATABASE_URL, os dados ficam num arquivo temporário e serão apagados quando o servidor reiniciar.');
+    resumePending();
   });
 })();

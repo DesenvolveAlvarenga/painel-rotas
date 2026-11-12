@@ -5,7 +5,8 @@
   "description": "Roteirização de entregas com mapa, rastreamento em tempo real e importação de planilha.",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/run.js"
+    "test": "node test/run.js",
+    "restaurar": "node restaurar.js"
   },
   "engines": {
     "node": ">=20"

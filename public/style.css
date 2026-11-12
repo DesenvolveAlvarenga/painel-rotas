@@ -8,6 +8,8 @@
   --bg:#0e1720; --surface:#16222d; --surface2:#1b2a37; --ink:#e7eef3; --muted:#93a4b1; --line:#2a3b49;
   --accent:#6aa2ff; --accent-ink:#0b1722; --good:#46c488; --alta:#ff7b66; --warn:#f0b35a; --done:#7e909d; color-scheme:dark}}
 *{box-sizing:border-box}
+.storewarn{margin:10px 0 0;padding:10px 14px;border:2px solid var(--alta);border-radius:8px;background:var(--surface);color:var(--alta);font-weight:600;line-height:1.4}
+.storewarn[hidden]{display:none}
 [hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 var(--f-body);padding:16px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 .shell{max-width:1400px;margin:0 auto;display:grid;gap:14px}

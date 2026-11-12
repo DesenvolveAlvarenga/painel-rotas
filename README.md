@@ -33,7 +33,22 @@ Os dados ficam num banco Postgres gratuito (Supabase), porque o plano gratuito d
 3. Em **Environment**, cadastre as variáveis da tabela abaixo (no mínimo `DATABASE_URL`, `ADMIN_PASSWORD` e `CONTACT_EMAIL`).
 4. Abra o endereço `https://...onrender.com` gerado, digite a senha e siga o passo 4 da seção anterior. Na aba **Frota**, copie o link de cada veículo e mande para o motorista.
 
-**Levar os dados que já estão no seu computador:** com o banco ainda vazio, rode o app uma vez localmente apontando para ele (PowerShell: `$env:DATABASE_URL="postgresql://..."; npm start`). Ele envia o `data/data.json` para o banco e passa a usar o banco. Feche com Ctrl+C.
+**Levar os dados que já estão no seu computador** (PowerShell, nesta pasta):
+```powershell
+$env:DATABASE_URL="postgresql://..."; npm run restaurar -- arquivo data/data.json
+```
+Depois, no Render, clique em **Manual Deploy → Restart service** para o app carregar os dados.
+
+**Não deixe o app rodando no computador e no Render ao mesmo tempo apontando para o mesmo banco.** O sistema não deixa uma cópia apagar a outra (a mais desatualizada recarrega do banco), mas as últimas alterações dela, de poucos segundos, se perdem.
+
+**Backups automáticos:** com banco, o app guarda uma cópia ao iniciar e a cada 30 minutos (as 100 mais recentes). Para ver e restaurar:
+```powershell
+$env:DATABASE_URL="postgresql://..."; npm run restaurar          # lista os backups
+$env:DATABASE_URL="postgresql://..."; npm run restaurar -- 42    # volta para o backup 42
+```
+Restaurar também salva o estado atual como backup, então dá para desfazer. Depois, reinicie o app no Render.
+
+**Aviso vermelho no painel:** aparece se o app estiver na nuvem sem `DATABASE_URL` (os dados seriam apagados ao reiniciar) ou se o banco recusar a gravação. Não trabalhe com esse aviso na tela.
 
 **Limites do plano gratuito** (confira as regras atuais nos sites):
 - O Render "dorme" após uns 15 minutos sem nenhum acesso; o primeiro acesso depois disso demora cerca de 1 minuto. Enquanto alguém usa o painel ou um motorista envia GPS, ele fica acordado.

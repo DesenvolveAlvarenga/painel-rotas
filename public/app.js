@@ -492,7 +492,11 @@ TABS.forEach(([t, p]) => $('#' + t).addEventListener('click', () => TABS.forEach
 function render() { renderKpis(); renderSummary(); renderMap(); renderList(); renderFleet(); renderSettings(); renderRegistry(); renderGeoProgress(); checkFailed(); }
 function setConn(s, t) { $('#conn').dataset.s = s; $('#connt').textContent = t; }
 const es = new EventSource('/api/events');
-es.addEventListener('state', e => { S = JSON.parse(e.data); gotState = true; render(); });
+es.addEventListener('state', e => {
+  S = JSON.parse(e.data); gotState = true;
+  const w = $('#storewarn'); w.textContent = S.storageWarning || ''; w.hidden = !S.storageWarning;
+  render();
+});
 es.addEventListener('routes', () => loadRoutes());
 es.onopen = () => setConn('live', 'Ao vivo');
 es.onerror = () => setConn('err', 'Reconectando…');
