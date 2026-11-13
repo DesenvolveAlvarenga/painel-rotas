@@ -117,7 +117,13 @@ function renderSummary() {
 }
 
 /* ---------------- lista de entregas ---------------- */
-let selected = null, editingDelivery = null, chosen = null;
+let selected = null, editingDelivery = null, chosen = null, pickDelivery = false;
+const PICK_TXT = 'Não achou? Marcar o ponto no mapa';
+function setPickDelivery(on) {
+  pickDelivery = on;
+  const b = $('#btn-addr-pick'); if (b) b.textContent = on ? 'Clique no mapa no local da entrega… (cancelar)' : PICK_TXT;
+  if (on) toast('Clique no mapa, no local da entrega. Use o zoom para ficar preciso.');
+}
 function deliveryRow(d, vc) {
   const done = d.status === 'entregue', failed = d.geoStatus === 'falhou', locating = d.geoStatus === 'pendente';
   return h('div', { class: 'row' + (done ? ' done' : ''), style: '--vc:' + (vc || '#7b8a96'), onclick: () => focusDelivery(d) },
@@ -171,12 +177,13 @@ async function doSearch() {
 }
 function renderResults(results) {
   const box = $('#results'); box.replaceChildren();
-  if (!results.length) { box.append(h('p', { class: 'hint warn' }, 'Nenhum resultado. Tente incluir cidade e estado. Você também pode adicionar a entrega mesmo assim e o sistema tenta localizar depois.')); return; }
+  if (!results.length) { box.append(h('p', { class: 'hint warn' }, 'Nenhum resultado. Confira o nome da rua e inclua a cidade (ex.: "Rua Sete de Setembro, 300, Palmital SP") ou o CEP. Se a rua não aparece no mapa, use "Marcar o ponto no mapa" logo acima.')); return; }
   results.forEach(r => {
-    const b = h('button', { type: 'button', 'aria-pressed': 'false', onclick: () => selectResult(r, b) }, r.label + (r.approx ? ' (posição aproximada da rua)' : ''));
+    const b = h('button', { type: 'button', 'aria-pressed': 'false', onclick: () => selectResult(r, b) }, r.label + (r.approx ? ' (posição aproximada da rua)' : ''),
+      r.check ? h('span', { class: 'hint warn' }, ' — confira a cidade: não achei na cidade digitada') : null);
     box.append(b);
   });
-  if (results.length === 1) box.firstChild.click();
+  if (results.length === 1 && !results[0].check) box.firstChild.click();
 }
 async function selectResult(r, btn) {
   chosen = r;
@@ -195,6 +202,7 @@ async function selectResult(r, btn) {
 }
 function resetDeliveryForm() {
   editingDelivery = null; chosen = null; pickedClient = null; if (typeof closeSugg === 'function') closeSugg();
+  if (pickDelivery) setPickDelivery(false);
   $('#dform').reset(); $('#results').replaceChildren(); $('#preview').hidden = true; gPrev.clearLayers();
   $('#addsum').textContent = 'Nova entrega'; $('#btn-add').textContent = 'Adicionar entrega'; $('#btn-cancel').hidden = true;
 }
@@ -312,7 +320,17 @@ $('#btn-depot-pick').addEventListener('click', () => {
   $('#btn-depot-pick').textContent = pickDepot ? 'Clique no mapa…' : (depotPt ? 'Mudar ponto' : 'Marcar no mapa');
   if (pickDepot) toast('Clique no mapa, no local do depósito. Use o zoom para ficar preciso.');
 });
+$('#btn-addr-pick').addEventListener('click', () => setPickDelivery(!pickDelivery));
 map.on('click', e => {
+  if (pickDelivery) {
+    setPickDelivery(false);
+    const r = { lat: Math.round(e.latlng.lat * 1e6) / 1e6, lng: Math.round(e.latlng.lng * 1e6) / 1e6, label: 'Ponto marcado no mapa', approx: false };
+    const box = $('#results'); box.replaceChildren();
+    const b = h('button', { type: 'button', 'aria-pressed': 'false', onclick: () => selectResult(r, b) }, r.label);
+    box.append(b); selectResult(r, b);
+    if (!$('#f-addr').value.trim()) toast('Ponto marcado. Escreva também o endereço (ou uma referência) no campo Endereço.');
+    return;
+  }
   if (pickClientId) {
     const id = pickClientId; pickClientId = null;
     api('PATCH', '/api/clients/' + id, { lat: Math.round(e.latlng.lat * 1e6) / 1e6, lng: Math.round(e.latlng.lng * 1e6) / 1e6 }).then(() => toast('Ponto salvo no cadastro do cliente.')).catch(x => toast(x.message));

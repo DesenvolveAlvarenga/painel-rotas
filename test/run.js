@@ -19,6 +19,13 @@ const fake = http.createServer((req, res) => {
   let mc;
   if ((mc = u.pathname.match(/^\/cep\/(\d+)$/))) { fake.cepCalls = (fake.cepCalls || 0) + 1; const c = CEPS[mc[1]]; if (!c) { res.statusCode = 404; return res.end('{}'); } return res.end(JSON.stringify(c)); }
   if (/^\/viacep\//.test(u.pathname)) return res.end('{"erro":"true"}');
+  if (u.pathname === '/photon/api/') {
+    fake.photonCalls = (fake.photonCalls || 0) + 1; fake.lastPhoton = u.searchParams.get('q');
+    if (/Erro Digitado/i.test(fake.lastPhoton)) return res.end(JSON.stringify({ features: [
+      { geometry: { coordinates: [-50.21, -22.79] }, properties: { name: 'Rua Erro Digitado Certa', city: 'Palmital', state: 'São Paulo', countrycode: 'BR', osm_key: 'highway' } },
+      { geometry: { coordinates: [-40.0, -10.0] }, properties: { name: 'Rua Erro Digitado Certa', city: 'Outra Cidade', state: 'Bahia', countrycode: 'BR', osm_key: 'highway' } }] }));
+    return res.end('{"features":[]}');
+  }
   if (u.pathname === '/google') {
     const address = u.searchParams.get('address'), comp = u.searchParams.get('components'); fake.glog.push({ address, comp, key: u.searchParams.get('key') });
     if (/Negada/i.test(address)) return res.end(JSON.stringify({ status: 'REQUEST_DENIED', error_message: 'chave' }));
@@ -31,6 +38,11 @@ const fake = http.createServer((req, res) => {
     const all = fake.qlog[fake.qlog.length - 1];
     if (/Instavel/i.test(all) && (fake.instavel = (fake.instavel || 0) + 1) <= 4) { res.statusCode = 503; return res.end('[]'); }
     if (/Sempre Fora/i.test(all)) { fake.foraCalls = (fake.foraCalls || 0) + 1; res.statusCode = 503; return res.end('[]'); }
+    if (q && /Duas Cidades/i.test(q)) return res.end(JSON.stringify([
+      { display_name: 'Rua Duas Cidades, Itápolis, SP', lat: '-21.6', lon: '-48.8', address: { city: 'Itápolis', state: 'São Paulo' } },
+      { display_name: 'Rua Duas Cidades, Palmital, MG', lat: '-19.8', lon: '-43.9', address: { city: 'Palmital', state: 'Minas Gerais' } },
+      { display_name: 'Rua Duas Cidades, Palmital, SP', lat: '-22.79', lon: '-50.21', address: { city: 'Palmital', state: 'São Paulo' } }]));
+    if (q && /Erro Digitado/i.test(q)) return res.end('[]');
     if (q && /Teste Estado/i.test(q)) return res.end(JSON.stringify([
       { display_name: 'Rua Teste Estado, 10, SP', lat: '-23.0', lon: '-46.0', address: { state: 'São Paulo', postcode: '12345-000' } },
       { display_name: 'Rua Teste Estado, 10, MS', lat: '-20.0', lon: '-54.0', address: { state: 'Mato Grosso do Sul', postcode: '79953-100' } }]));
@@ -60,7 +72,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
   const fport = fake.address().port, dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rotas-'));
   const port = 3900 + Math.floor(Math.random() * 90), base = 'http://localhost:' + port;
   const srv = spawn('node', [path.join(__dirname, '..', 'server.js')], {
-    env: { ...process.env, PORT: port, DATA_DIR: dir, ADMIN_PASSWORD: 'segredo', GEO_GAP_MS: '0', GEO_RETRY_MS: '0', GEO_REQUEUE_MS: '200', NOMINATIM_URL: 'http://localhost:' + fport, OSRM_URL: 'http://localhost:' + fport, CEP_URL: 'http://localhost:' + fport + '/cep', VIACEP_URL: 'http://localhost:' + fport + '/viacep' }, stdio: ['ignore', 'inherit', 'inherit']
+    env: { ...process.env, PORT: port, DATA_DIR: dir, ADMIN_PASSWORD: 'segredo', GEO_GAP_MS: '0', GEO_RETRY_MS: '0', GEO_REQUEUE_MS: '200', PHOTON_URL: 'http://localhost:' + fport + '/photon', NOMINATIM_URL: 'http://localhost:' + fport, OSRM_URL: 'http://localhost:' + fport, CEP_URL: 'http://localhost:' + fport + '/cep', VIACEP_URL: 'http://localhost:' + fport + '/viacep' }, stdio: ['ignore', 'inherit', 'inherit']
   });
   const auth = { Authorization: 'Basic ' + Buffer.from('admin:segredo').toString('base64') };
   const call = async (method, p, body, headers = auth) => {
@@ -97,6 +109,20 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     assert.strictEqual(fake.lastStruct.state, 'Minas Gerais'); assert.strictEqual(fake.lastStruct.city, 'Contagem'); assert.strictEqual(fake.lastStruct.street, '10 Rua Estranha'); ok('busca acha endereço sem vírgula antes do número usando cidade e estado');
     r = await call('PUT', '/api/settings', { depotAddress: 'Depósito marcado', depotLat: -19.9, depotLng: -44.0, depotLabel: 'Depósito marcado' });
     assert.strictEqual(r.status, 200); assert.strictEqual(r.body.depot.lat, -19.9); ok('depósito definido pelo ponto marcado no mapa');
+
+    const gq = async q => (await call('GET', '/api/geocode?q=' + encodeURIComponent(q))).body.results;
+    let pc = fake.photonCalls || 0, res2 = await gq('rua duas cidades 10 palmital');
+    assert.deepStrictEqual(res2.map(x => x.label), ['Rua Duas Cidades, Palmital, MG', 'Rua Duas Cidades, Palmital, SP']);
+    ok('busca manual descarta rua de mesmo nome em cidade não digitada e ordena pela distância do depósito');
+    res2 = await gq('Rua Duas Cidades, 10, Palmital - SP');
+    assert.deepStrictEqual(res2.map(x => x.label), ['Rua Duas Cidades, Palmital, SP']); ok('busca manual respeita a UF digitada');
+    res2 = await gq('Rua Erro Digitado 15, Palmital SP');
+    assert.ok(fake.photonCalls > pc && !/15/.test(fake.lastPhoton)); assert.strictEqual(res2.length, 1);
+    assert.match(res2[0].label, /Rua Erro Digitado Certa.*Palmital/); assert.strictEqual(res2[0].approx, true); ok('sem resultado na busca principal, usa o Photon (sem o número) e filtra pela cidade');
+    res2 = await gq('CEP 13346-250');
+    assert.ok(res2.length >= 1 && /Antonio Martiliano/.test(res2[0].label)); assert.ok(fake.qlog.some(x => /Martiliano/.test(x) && /Indaiatuba/.test(x))); ok('CEP sozinho: busca a rua e a cidade do CEP');
+    await gq('R. Pres. Vargas, 200, Palmital SP');
+    assert.ok(fake.qlog.some(x => /Rua Presidente Vargas, 200/.test(x))); ok('abreviações na busca manual (R., Pres.)');
     assert.strictEqual((await call('GET', '/api/geocode?q=ab')).status, 400); ok('busca curta é recusada');
 
     const dep = (await call('GET', '/api/state')).body.depot;
@@ -241,7 +267,7 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 
     // Google (opcional)
     const gport = port + 100, gdir = fs.mkdtempSync(path.join(os.tmpdir(), 'rotasg-'));
-    const gsrv = spawn('node', [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, PORT: gport, DATA_DIR: gdir, GEO_GAP_MS: '0', GOOGLE_MAPS_KEY: 'CHAVE-TESTE', GOOGLE_GEOCODE_URL: 'http://localhost:' + fport + '/google', CEP_URL: 'http://localhost:' + fport + '/cep', VIACEP_URL: 'http://localhost:' + fport + '/viacep' }, stdio: ['ignore', 'ignore', 'inherit'] });
+    const gsrv = spawn('node', [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, PORT: gport, DATA_DIR: gdir, GEO_GAP_MS: '0', GOOGLE_MAPS_KEY: 'CHAVE-TESTE', PHOTON_URL: '', GOOGLE_GEOCODE_URL: 'http://localhost:' + fport + '/google', CEP_URL: 'http://localhost:' + fport + '/cep', VIACEP_URL: 'http://localhost:' + fport + '/viacep' }, stdio: ['ignore', 'ignore', 'inherit'] });
     try {
       const gb = 'http://localhost:' + gport; for (let i = 0; i < 50; i++) { try { await fetch(gb + '/healthz'); break; } catch (e) { await wait(100); } }
       const gcall = (m, p2, b) => fetch(gb + p2, { method: m, headers: { 'Content-Type': 'application/json' }, body: b ? JSON.stringify(b) : undefined }).then(x => x.json());

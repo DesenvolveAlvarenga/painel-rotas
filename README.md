@@ -84,6 +84,14 @@ Reimportar a planilha atualiza os clientes pelo código, sem duplicar e sem repe
 
 Para montar a rota do dia, na aba **Entregas** digite o código ou o nome no campo Cliente: as sugestões aparecem, setas e Enter escolhem, e o endereço e a rota até o depósito aparecem na hora.
 
+### Endereço digitado à mão
+- Escreva rua, número e cidade; a UF no final ajuda: `Rua Sete de Setembro, 300, Palmital SP`. Vírgulas não são obrigatórias.
+- Abreviações (Av, R., Pres., Dr., Cel...) e datas em número ("7 de Setembro") são entendidas.
+- Com o CEP no texto (ou só o CEP), o sistema usa a rua e a cidade do CEP e não aceita resultado de outra cidade.
+- A busca consulta o OpenStreetMap e o Photon (tolerante a pequenos erros de digitação). Entre cidades de mesmo nome, a mais perto do depósito vem primeiro.
+- Resultado marcado **"confira a cidade"**: nada foi achado na cidade digitada; pode ser uma rua de mesmo nome em outro lugar.
+- Rua que não existe no mapa gratuito: use **"Não achou? Marcar o ponto no mapa"** e clique no local.
+
 ## Mais precisão nos endereços (opcional): Google
 A busca gratuita (OpenStreetMap) erra ou não conhece algumas ruas e números do Brasil. Para melhorar muito a precisão, crie uma chave da API "Geocoding" no Google Cloud e informe na variável `GOOGLE_MAPS_KEY`. O sistema passa a usar o Google para localizar os clientes (com CEP e número) e continua guardando o resultado para não pagar duas vezes. Confira o preço e a cota gratuita atuais no site do Google antes de ativar; a conta exige cartão.
 

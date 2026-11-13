@@ -18,6 +18,7 @@ const NOMINATIM_URL = (process.env.NOMINATIM_URL || 'https://nominatim.openstree
 const OSRM_URL = (process.env.OSRM_URL || 'https://router.project-osrm.org').replace(/\/$/, '');
 const CEP_URL = (process.env.CEP_URL || 'https://brasilapi.com.br/api/cep/v2').replace(/\/$/, '');
 const VIACEP_URL = (process.env.VIACEP_URL || 'https://viacep.com.br/ws').replace(/\/$/, '');
+const PHOTON_URL = (process.env.PHOTON_URL === undefined ? 'https://photon.komoot.io' : process.env.PHOTON_URL).replace(/\/$/, '');
 const GOOGLE_KEY = process.env.GOOGLE_MAPS_KEY || '';
 const GOOGLE_URL = process.env.GOOGLE_GEOCODE_URL || 'https://maps.googleapis.com/maps/api/geocode/json';
 const CONTACT_EMAIL = process.env.CONTACT_EMAIL || '';
@@ -223,6 +224,109 @@ async function searchChain(addr, limit) {
     if (res.length) return { results: res.map(r => ({ ...r, approx: t.approx })), approx: t.approx };
   }
   return { results: [], approx: false };
+}
+/* ----- busca manual (campo Endereço da entrega) ----- */
+/* Photon: buscador gratuito sobre o mesmo mapa (OpenStreetMap), tolerante a pequenos erros de digitação
+   e que prefere resultados perto do depósito. Consultado junto com a busca principal. */
+async function photon(q, limit, near) {
+  if (!PHOTON_URL) return [];
+  const u = new URL(PHOTON_URL + '/api/');
+  u.searchParams.set('q', q); u.searchParams.set('limit', String(limit));
+  if (near) { u.searchParams.set('lat', String(near.lat)); u.searchParams.set('lon', String(near.lng)); }
+  const r = await fetch(u, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(10000) });
+  if (!r.ok) throw new Error('photon respondeu ' + r.status);
+  const j = await r.json(), cc = (COUNTRY_CODES || '').split(',')[0].toLowerCase();
+  return (j.features || []).filter(f => !cc || String(f.properties.countrycode || '').toLowerCase() === cc).map(f => {
+    const p = f.properties || {}, [lng, lat] = (f.geometry && f.geometry.coordinates) || [];
+    const city = p.city || (p.osm_key === 'place' ? p.name : '') || '';
+    const label = [p.street && p.name !== p.street ? p.name : '', p.street || p.name, p.housenumber, p.district || p.locality, city, p.state, p.postcode].filter(Boolean)
+      .filter((x, i, a) => a.indexOf(x) === i).join(', ');
+    return { label, lat: Number(lat), lng: Number(lng), city, state: p.state || '', postcode: p.postcode || '', street: p.street || p.name || '', housenumber: p.housenumber || '' };
+  }).filter(x => validLat(x.lat) && validLng(x.lng));
+}
+const CEP_IN_TEXT = /(?:^|\D)(\d{2}\.?\d{3})-?(\d{3})(?!\d)/;
+const wordsOf = s => ' ' + norm(s).replace(/[^a-z0-9]+/g, ' ').trim() + ' ';
+const hasWords = (hay, needle) => { const n = wordsOf(needle).trim(); return !!n && wordsOf(hay).includes(' ' + n + ' '); };
+/* Nome da rua parecido o bastante: cada palavra importante digitada aparece no resultado, aceitando
+   1 letra errada (2 em palavras longas) e número escrito por extenso ("7 de Setembro" = "Sete de Setembro"). */
+const STREET_STOP = new Set(['rua', 'r', 'avenida', 'av', 'travessa', 'alameda', 'praca', 'estrada', 'rodovia', 'largo', 'via', 'de', 'da', 'do', 'das', 'dos', 'e']);
+const DAY_WORDS = ['', 'Primeiro', 'Dois', 'Três', 'Quatro', 'Cinco', 'Seis', 'Sete', 'Oito', 'Nove', 'Dez', 'Onze', 'Doze', 'Treze', 'Quatorze', 'Quinze', 'Dezesseis', 'Dezessete', 'Dezoito', 'Dezenove', 'Vinte', 'Vinte e Um', 'Vinte e Dois', 'Vinte e Três', 'Vinte e Quatro', 'Vinte e Cinco', 'Vinte e Seis', 'Vinte e Sete', 'Vinte e Oito', 'Vinte e Nove', 'Trinta', 'Trinta e Um'];
+/* "7 de Setembro" -> "Sete de Setembro": é assim que a maioria dessas ruas está escrita no mapa. */
+const datesInWords = s => s.replace(/\b(\d{1,2})\s*[º°ºo]?\s+de\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/gi, (m, d, mo) => (DAY_WORDS[+d] || d) + ' de ' + mo);
+const NUM_WORDS = { primeiro: 'um', 1: 'um', 2: 'dois', 3: 'tres', 4: 'quatro', 5: 'cinco', 6: 'seis', 7: 'sete', 8: 'oito', 9: 'nove', 10: 'dez', 11: 'onze', 12: 'doze', 13: 'treze', 14: 'quatorze', 15: 'quinze', 16: 'dezesseis', 17: 'dezessete', 18: 'dezoito', 19: 'dezenove', 20: 'vinte', 21: 'vinte', 25: 'vinte', 30: 'trinta', 31: 'trinta', xv: 'quinze', ix: 'nove', xii: 'doze', vii: 'sete' };
+const streetWords = s => wordsOf(s).trim().split(' ').filter(w => w && !STREET_STOP.has(w)).map(w => NUM_WORDS[w] || w);
+function editDist(a, b) {
+  const d = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = d[0]; d[0] = i;
+    for (let j = 1; j <= b.length; j++) { const t = d[j]; d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = t; }
+  }
+  return d[b.length];
+}
+const wordLike = (a, b) => a === b || (a.length >= 4 && b.length >= 4 && editDist(a, b) <= (Math.max(a.length, b.length) >= 8 ? 2 : 1));
+function streetLike(typed, found) {
+  const want = streetWords(typed), have = streetWords(found);
+  return want.length > 0 && want.every(w => have.some(h => wordLike(w, h)));
+}
+/* Separa o que foi digitado: CEP, rua (com abreviações expandidas), número, resto (bairro/cidade) e UF no final. */
+function normalizeManual(q) {
+  let text = String(q).replace(/\s+/g, ' ').trim(), cep = '';
+  const m = text.match(CEP_IN_TEXT);
+  if (m) { cep = m[1].replace(/\D/g, '') + m[2]; text = text.replace(m[1] + (text.includes(m[1] + '-') ? '-' : '') + m[2], ' '); }
+  text = text.replace(/\bCEP\b:?/ig, ' ').replace(/\s+/g, ' ').replace(/(\s*[,;]\s*)+/g, ', ').replace(/^[\s,;-]+|[\s,;-]+$/g, '');
+  let segs = text.split(/\s*,\s*|\s+-\s+/).map(s => s.trim()).filter(Boolean), uf = '';
+  const last = segs.length ? segs[segs.length - 1] : '';
+  if (segs.length > 1 && UF[last.toUpperCase()]) { uf = last.toUpperCase(); segs.pop(); }
+  else if (segs.length) {
+    const mm = last.match(/^(.*\S)\s+([A-Za-z]{2})$/);
+    if (mm && UF[mm[2].toUpperCase()] && (segs.length > 1 || /\d/.test(mm[1]))) { uf = mm[2].toUpperCase(); segs[segs.length - 1] = mm[1]; }
+  }
+  const sp = segs.length ? Clean.cleanStreet(segs[0]) : { street: '', number: '', tail: '' };
+  let number = sp.number;
+  let rest = [sp.tail, ...segs.slice(1)].map(s => (s || '').trim()).filter(Boolean);
+  if (!number && rest.length && NUM_ONLY.test(rest[0])) { number = rest[0].match(NUM_ONLY)[1]; rest = rest.slice(1); }
+  return { cep, street: sp.street, number, rest, uf };
+}
+async function manualSearch(q) {
+  const n = normalizeManual(q);
+  const info = n.cep.length === 8 ? (await lookupCep(n.cep)) || null : null;
+  const near = db.depot && validLat(db.depot.lat) ? { lat: db.depot.lat, lng: db.depot.lng } : null;
+  const ufCode = n.uf || (info && info.uf) || '', ufName = UF[ufCode] || '';
+  const street = n.street || (info && info.street) || '';
+  const rest = n.rest.slice();
+  if (info && info.city && !hasWords(q, info.city)) rest.push(info.city);
+  if (ufCode) rest.push(ufCode);
+  const context = [q, info && info.city, db.settings.suffix].filter(Boolean).join(' ');
+  const cepPoint = info && info.lat != null ? { label: 'Posição do CEP ' + Clean.fmtCep(n.cep) + ' · ' + [info.street, info.bairro, info.city + '/' + info.uf].filter(Boolean).join(', '), lat: info.lat, lng: info.lng, approx: true, city: info.city, state: UF[info.uf] || '' } : null;
+  if (!street) return cepPoint ? [cepPoint] : [];
+
+  const text = [street + (n.number ? ', ' + n.number : ''), ...rest].join(', ');
+  let osmError = null;
+  /* As duas fontes ao mesmo tempo. O Photon recebe a rua sem o número (ele confunde número com CEP). */
+  const [fromOsm, fromPhoton] = await Promise.all([
+    searchChain(text, 5).then(x => x.results).catch(e => { osmError = e; console.error('Busca manual (OpenStreetMap) falhou: ' + e.message); return []; }),
+    photon([datesInWords(street), ...rest].join(', '), 8, near).catch(e => { console.error('Busca manual (Photon) falhou: ' + e.message); return []; })
+  ]);
+  /* O rótulo traz rua, bairro e cidade: assim "Av X Palmital" (sem vírgula) ainda confere com "Av X" em Palmital. */
+  const all = fromOsm.filter(r => streetLike(street, r.label))
+    .concat(fromPhoton.filter(r => streetLike(street, r.label)).map(r => ({ ...r, approx: !!n.number && r.housenumber !== n.number })));
+  const inCity = r => !!r.city && hasWords(context, r.city);
+  const stateOk = r => !ufName || !r.state || norm(r.state) === norm(ufName);
+  let good = all.filter(stateOk);
+  if (info && info.city) good = good.filter(r => !r.city || norm(r.city) === norm(info.city));   // com CEP, a cidade do CEP manda
+  /* Se algum resultado está numa cidade que foi digitada, os de outras cidades são ruas de mesmo nome em outro lugar. */
+  else if (good.some(inCity)) good = good.filter(inCity);
+  if (!good.length && cepPoint) good = [cepPoint];
+  if (!good.length && osmError && !fromPhoton.length) throw osmError;
+  /* Mesma cidade primeiro; entre cidades de mesmo nome, a mais perto do depósito; dentro do mesmo lugar, o número exato. */
+  const zone = r => (near ? Math.round(hav(near, r) / 25) : 0);
+  good.sort((a, b) => (inCity(b) - inCity(a)) || (zone(a) - zone(b)) || (a.approx - b.approx));
+  const out = [];
+  for (const r of good) if (!out.some(o => o.label === r.label || (hav(o, r) < 0.03 && o.approx === r.approx))) out.push(r);
+  /* Digitou algo além da rua (bairro/cidade) e nada caiu numa cidade digitada: pode ser rua de mesmo nome em outro lugar. */
+  const typedPlace = rest.length > 0 || streetWords(street).length > 3;
+  const check = typedPlace && !(info && info.city) && !out.some(inCity);
+  return out.slice(0, 5).map(r => ({ label: r.label, lat: r.lat, lng: r.lng, approx: !!r.approx, ...(check && r !== cepPoint ? { check: true } : {}) }));
 }
 async function geocodeAddress(addr, force) {
   const key = 'g2:' + withSuffix(addr).toLowerCase();
@@ -563,7 +667,7 @@ async function adminApi(req, res, url, p) {
   if (p === '/api/geocode' && m === 'GET') {
     const q = str(url.searchParams.get('q') || '', 200);
     if (q.length < 4) throw new HttpError(400, 'Digite o endereço completo para buscar.');
-    try { return json(res, 200, { results: (await searchChain(q, 5)).results }); }
+    try { return json(res, 200, { results: await manualSearch(q) }); }
     catch (e) { throw new HttpError(502, 'Serviço de busca de endereços indisponível.'); }
   }
   if (p === '/api/route' && m === 'GET') {

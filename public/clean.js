@@ -7,7 +7,7 @@
   const SMALL = new Set(['de', 'da', 'do', 'das', 'dos', 'e', 'em', 'na', 'no', 'nas', 'nos']);
   const ROMAN = /^(i|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii|xiii|xiv|xv|xvi|xvii|xviii|xix|xx|xxi|xxii|xxiii)$/;
   const FIRST = { AV: 'AVENIDA', AVD: 'AVENIDA', R: 'RUA', ROD: 'RODOVIA', ESTR: 'ESTRADA', EST: 'ESTRADA', AL: 'ALAMEDA', TV: 'TRAVESSA', TRAV: 'TRAVESSA', PC: 'PRAÇA', PCA: 'PRAÇA', 'PÇA': 'PRAÇA', LGO: 'LARGO', VLA: 'VILA' };
-  const SAFE = { PROF: 'PROFESSOR', PROFA: 'PROFESSORA', DR: 'DOUTOR', DRA: 'DOUTORA', CEL: 'CORONEL', ENG: 'ENGENHEIRO', STA: 'SANTA', STO: 'SANTO', GAL: 'GENERAL', CAP: 'CAPITÃO', DEP: 'DEPUTADO', PREF: 'PREFEITO' };
+  const SAFE = { PROF: 'PROFESSOR', PROFA: 'PROFESSORA', DR: 'DOUTOR', DRA: 'DOUTORA', CEL: 'CORONEL', ENG: 'ENGENHEIRO', STA: 'SANTA', STO: 'SANTO', GAL: 'GENERAL', CAP: 'CAPITÃO', DEP: 'DEPUTADO', PREF: 'PREFEITO', PRES: 'PRESIDENTE', PRESID: 'PRESIDENTE', GOV: 'GOVERNADOR', SEN: 'SENADOR', VISC: 'VISCONDE', CONS: 'CONSELHEIRO', MONS: 'MONSENHOR', BRIG: 'BRIGADEIRO', CMTE: 'COMANDANTE', CDOR: 'COMENDADOR' };
   const DOTTED = { MAL: 'MARECHAL', ALM: 'ALMIRANTE', TEN: 'TENENTE', SGT: 'SARGENTO', VER: 'VEREADOR', DES: 'DESEMBARGADOR', PE: 'PADRE', COM: 'COMENDADOR' };
   const UF_NAMES = { AC: 'Acre', AL: 'Alagoas', AP: 'Amapá', AM: 'Amazonas', BA: 'Bahia', CE: 'Ceará', DF: 'Distrito Federal', ES: 'Espírito Santo', GO: 'Goiás', MA: 'Maranhão', MT: 'Mato Grosso', MS: 'Mato Grosso do Sul', MG: 'Minas Gerais', PA: 'Pará', PB: 'Paraíba', PR: 'Paraná', PE: 'Pernambuco', PI: 'Piauí', RJ: 'Rio de Janeiro', RN: 'Rio Grande do Norte', RS: 'Rio Grande do Sul', RO: 'Rondônia', RR: 'Roraima', SC: 'Santa Catarina', SP: 'São Paulo', SE: 'Sergipe', TO: 'Tocantins' };
 
