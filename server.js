@@ -308,7 +308,8 @@ async function manualSearch(q) {
     photon([datesInWords(street), ...rest].join(', '), 8, near).catch(e => { console.error('Busca manual (Photon) falhou: ' + e.message); return []; })
   ]);
   /* O rótulo traz rua, bairro e cidade: assim "Av X Palmital" (sem vírgula) ainda confere com "Av X" em Palmital. */
-  const all = fromOsm.filter(r => streetLike(street, r.label))
+  /* Só é "número exato" se o número digitado aparece no resultado; senão o mapa achou só a rua. */
+  const all = fromOsm.filter(r => streetLike(street, r.label)).map(r => ({ ...r, approx: r.approx || (!!n.number && !hasWords(r.label, n.number)) }))
     .concat(fromPhoton.filter(r => streetLike(street, r.label)).map(r => ({ ...r, approx: !!n.number && r.housenumber !== n.number })));
   const inCity = r => !!r.city && hasWords(context, r.city);
   const stateOk = r => !ufName || !r.state || norm(r.state) === norm(ufName);
