@@ -33,6 +33,7 @@
     <aside class="side">
       <div class="tabs" role="tablist">
         <button role="tab" id="t-del" aria-selected="true" aria-controls="p-del" type="button">Entregas</button>
+        <button role="tab" id="t-ord" aria-selected="false" aria-controls="p-ord" type="button">Pedidos <span class="badge" id="ord-badge" hidden></span></button>
         <button role="tab" id="t-imp" aria-selected="false" aria-controls="p-imp" type="button">Clientes</button>
         <button role="tab" id="t-veh" aria-selected="false" aria-controls="p-veh" type="button">Frota</button>
       </div>
@@ -62,6 +63,20 @@
         </details>
         <div id="dlist"></div>
         <div><button class="btn small" id="btn-clear" type="button">Limpar o dia</button></div>
+      </div>
+
+      <div class="panel" id="p-ord" role="tabpanel" aria-labelledby="t-ord" hidden>
+        <div class="card">
+          <h3>Pedidos lançados pelos motoristas</h3>
+          <div class="two">
+            <div class="field"><label for="o-date">Dia</label><input id="o-date" type="date"></div>
+            <div class="field"><label for="o-veh">Veículo</label><select id="o-veh"></select></div>
+          </div>
+          <div class="field"><label for="o-status">Situação</label><select id="o-status"><option value="">Todos</option><option value="novo">Novos (a conferir)</option><option value="conferido">Conferidos</option></select></div>
+          <p class="hint" id="o-sum"></p>
+          <div><button class="btn small" id="btn-ocsv" type="button">Baixar planilha (.csv)</button></div>
+        </div>
+        <div id="olist" style="display:grid;gap:10px"></div>
       </div>
 
       <div class="panel" id="p-imp" role="tabpanel" aria-labelledby="t-imp" hidden>

@@ -124,6 +124,7 @@ function setPickDelivery(on) {
   const b = $('#btn-addr-pick'); if (b) b.textContent = on ? 'Clique no mapa no local da entrega… (cancelar)' : PICK_TXT;
   if (on) toast('Clique no mapa, no local da entrega. Use o zoom para ficar preciso.');
 }
+const ordersCount = id => (S.orders || []).filter(o => o.stopId === id).length;
 function deliveryRow(d, vc) {
   const done = d.status === 'entregue', failed = d.geoStatus === 'falhou', locating = d.geoStatus === 'pendente';
   return h('div', { class: 'row' + (done ? ' done' : ''), style: '--vc:' + (vc || '#7b8a96'), onclick: () => focusDelivery(d) },
@@ -134,7 +135,9 @@ function deliveryRow(d, vc) {
         locating ? h('span', { class: 'chip' }, 'Localizando…') : null,
         failed ? h('span', { class: 'chip warn' }, d.geoError || 'Não encontrado') : null,
         d.approx ? h('span', { class: 'chip warn', title: 'O número não foi encontrado; o ponto é da rua.' }, 'Posição aproximada') : null,
-        done ? h('span', { class: 'chip ok' }, 'Entregue às ' + fmtHour(d.deliveredAt)) : null)),
+        done ? h('span', { class: 'chip ok' }, 'Entregue às ' + fmtHour(d.deliveredAt)) : null,
+        d.addedByDriver ? h('span', { class: 'chip' }, 'Incluída pelo motorista') : null,
+        ordersCount(d.id) ? h('span', { class: 'chip next' }, ordersCount(d.id) + (ordersCount(d.id) > 1 ? ' pedidos' : ' pedido')) : null)),
     h('div', { class: 'right' },
       !done && d.etaMin != null ? 'em ' + fmtMin(d.etaMin) : null,
       h('div', { class: 'mini' },
@@ -153,10 +156,11 @@ function renderList() {
   for (const v of S.vehicles) {
     const ds = S.deliveries.filter(d => d.vehicleId === v.id).sort((a, b) => a.order - b.order);
     if (!ds.length) continue;
-    const r = routes[v.id], pend = ds.filter(d => d.status === 'pendente').length;
+    const r = routes[v.id], pend = ds.filter(d => d.status === 'pendente').length, own = ds.some(d => d.byDriver && d.status === 'pendente');
     box.append(h('div', { class: 'grp', style: '--c:' + colorOf(v.id) },
       h('div', { class: 'grp-h' }, h('h2', {}, v.name + (v.driver ? ' · ' + v.driver : '')),
-        h('span', { class: 'meta' }, (ds.length - pend) + '/' + ds.length + ' entregues' + (r && pend ? ' · ' + fmtKm(r.distanceM / 1000) + ' · ' + fmtMin(r.durationS / 60) : ''))),
+        h('span', { class: 'meta' }, (ds.length - pend) + '/' + ds.length + ' entregues' + (r && pend ? ' · ' + fmtKm(r.distanceM / 1000) + ' · ' + fmtMin(r.durationS / 60) : '')),
+        own ? h('span', { class: 'chip next', title: '"Otimizar rotas" não mexe nesta rota enquanto houver paradas pendentes montadas pelo motorista.' }, 'Rota montada pelo motorista') : null),
       ds.map(d => deliveryRow(d, colorOf(v.id)))));
   }
   const loose = S.deliveries.filter(d => d.geoStatus === 'ok' && d.status === 'pendente' && !S.vehicles.some(v => v.id === d.vehicleId));
@@ -504,10 +508,63 @@ clientInput.addEventListener('keydown', e => {
 });
 clientInput.addEventListener('blur', () => setTimeout(closeSugg, 150));
 
+/* ---------------- pedidos dos motoristas ---------------- */
+const brl = n => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const fmtQty = n => n.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
+const dayKey = t => { const d = new Date(t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+let seenOrders = null;
+$('#o-date').value = dayKey(Date.now());
+['#o-date', '#o-veh', '#o-status'].forEach(id => $(id).addEventListener('change', renderOrders));
+function filteredOrders() {
+  const day = $('#o-date').value, vid = $('#o-veh').value, st = $('#o-status').value;
+  return (S.orders || []).filter(o => (!day || dayKey(o.createdAt) === day) && (!vid || o.vehicleId === vid) && (!st || o.status === st))
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+function renderOrders() {
+  const all = S.orders || [];
+  /* aviso de pedido novo */
+  if (seenOrders === null) seenOrders = new Set(all.map(o => o.id));
+  else for (const o of all) if (!seenOrders.has(o.id)) { seenOrders.add(o.id); toast('Novo pedido Nº ' + o.num + ' de ' + o.client + ' (' + o.vehicleName + '): ' + brl(o.total)); }
+  const novos = all.filter(o => o.status === 'novo').length, bd = $('#ord-badge');
+  bd.hidden = !novos; bd.textContent = novos;
+  const sel = $('#o-veh'), cur = sel.value;
+  sel.replaceChildren(h('option', { value: '' }, 'Todos'), ...S.vehicles.map(v => h('option', { value: v.id }, v.name + (v.driver ? ' · ' + v.driver : ''))));
+  sel.value = S.vehicles.some(v => v.id === cur) ? cur : '';
+  const list = filteredOrders(), total = list.reduce((t, o) => t + o.total, 0);
+  $('#o-sum').textContent = list.length ? list.length + (list.length > 1 ? ' pedidos' : ' pedido') + ' · ' + brl(total) + (novos ? ' · ' + novos + ' a conferir no total' : '') : 'Nenhum pedido com esses filtros.';
+  $('#btn-ocsv').disabled = !list.length;
+  const box = $('#olist'); box.replaceChildren();
+  for (const o of list) {
+    box.append(h('div', { class: 'ocard' + (o.status === 'novo' ? ' novo' : ''), style: '--c:' + colorOf(o.vehicleId) },
+      h('div', { class: 'ohead' }, h('h2', {}, 'Nº ' + o.num + ' · ', o.code ? h('span', { class: 'code' }, o.code) : null, o.client), h('span', { class: 'tot' }, brl(o.total))),
+      h('div', { class: 'addr' }, o.address),
+      h('div', { class: 'hint' }, o.vehicleName + (o.driver ? ' · ' + o.driver : '') + ' · ' + new Date(o.createdAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })),
+      h('table', { class: 'items' }, o.items.map(it => h('tr', {},
+        h('td', { class: 'n' }, fmtQty(it.qty) + (it.unit ? ' ' + it.unit : '')), h('td', {}, it.desc),
+        h('td', { class: 'n' }, it.price != null ? brl(it.price) : '—'), h('td', { class: 'n' }, it.price != null ? brl(it.price * it.qty) : '')))),
+      o.notes ? h('div', {}, h('b', {}, 'Obs.: '), o.notes) : null,
+      h('div', { class: 'inline' },
+        h('span', { class: 'chip' + (o.status === 'conferido' ? ' ok' : ' next') }, o.status === 'conferido' ? 'Conferido' : 'Novo'),
+        h('button', { class: 'btn small', type: 'button', onclick: () => api('PATCH', '/api/orders/' + o.id, { status: o.status === 'novo' ? 'conferido' : 'novo' }).catch(e => toast(e.message)) }, o.status === 'novo' ? 'Marcar como conferido' : 'Voltar para novo'),
+        h('button', { class: 'btn small', type: 'button', onclick: () => { if (confirm('Excluir o pedido Nº ' + o.num + ' de ' + o.client + '?')) api('DELETE', '/api/orders/' + o.id).catch(e => toast(e.message)); } }, 'Excluir'))));
+  }
+}
+$('#btn-ocsv').addEventListener('click', () => {
+  const q = v => { const s = String(v == null ? '' : v); return /[";\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const num = n => (n == null ? '' : String(n).replace('.', ','));
+  const lines = [['Pedido', 'Data', 'Hora', 'Veículo', 'Motorista', 'Código', 'Cliente', 'Endereço', 'Produto', 'Qtd', 'Unidade', 'Preço unitário', 'Subtotal', 'Total do pedido', 'Situação', 'Observação'].join(';')];
+  for (const o of filteredOrders()) for (const it of o.items) {
+    const d = new Date(o.createdAt);
+    lines.push([o.num, d.toLocaleDateString('pt-BR'), fmtHour(o.createdAt), o.vehicleName, o.driver, o.code, o.client, o.address, it.desc, num(it.qty), it.unit, num(it.price), it.price != null ? num(Math.round(it.price * it.qty * 100) / 100) : '', num(o.total), o.status, o.notes].map(q).join(';'));
+  }
+  const a = h('a', { href: URL.createObjectURL(new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })), download: 'pedidos-' + ($('#o-date').value || 'todos') + '.csv' });
+  document.body.append(a); a.click(); a.remove();
+});
+
 /* ---------------- abas, atualização e conexão ---------------- */
-const TABS = [['t-del', 'p-del'], ['t-imp', 'p-imp'], ['t-veh', 'p-veh']];
+const TABS = [['t-del', 'p-del'], ['t-ord', 'p-ord'], ['t-imp', 'p-imp'], ['t-veh', 'p-veh']];
 TABS.forEach(([t, p]) => $('#' + t).addEventListener('click', () => TABS.forEach(([t2, p2]) => { $('#' + t2).setAttribute('aria-selected', String(t2 === t)); $('#' + p2).hidden = p2 !== p; })));
-function render() { renderKpis(); renderSummary(); renderMap(); renderList(); renderFleet(); renderSettings(); renderRegistry(); renderGeoProgress(); checkFailed(); }
+function render() { renderKpis(); renderSummary(); renderMap(); renderList(); renderFleet(); renderSettings(); renderRegistry(); renderGeoProgress(); checkFailed(); renderOrders(); }
 function setConn(s, t) { $('#conn').dataset.s = s; $('#connt').textContent = t; }
 const es = new EventSource('/api/events');
 es.addEventListener('state', e => {

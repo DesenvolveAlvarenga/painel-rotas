@@ -265,6 +265,49 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
     const cf = (await call('GET', '/api/clients/failed')).body.clients.find(x => x.code === '7002');
     assert.ok(cf && /indisponível/.test(cf.error)); assert.strictEqual(fake.foraCalls, 9); ok('serviço sempre fora: desiste após 3 rodadas de 3 tentativas e avisa');
 
+    // motorista monta a rota e lança pedidos
+    const dv = (a, b) => call(b === undefined ? 'GET' : 'POST', '/api/driver/' + tok + (a ? '/' + a : ''), b, {});
+    r = await call('POST', '/api/clients/import', { rows: [{ code: '7001', client: 'Bar do Zé', address: 'Rua Epsilon 70, Centro' }, { code: '7002', client: 'Lanchonete Boa', address: 'Rua Zeta 80, Centro' }] });
+    await waitGeo();
+    r = await dv('clients?q=7001'); assert.strictEqual(r.status, 200); const ze = r.body.results.find(c => c.code === '7001');
+    assert.ok(ze && !ze.inMyRoute && !ze.inOtherRoute); ok('motorista busca clientes do cadastro');
+    assert.strictEqual((await dv('stop', { clientId: ze.id })).status, 201);
+    assert.strictEqual((await dv('stop', { clientId: ze.id })).status, 409); ok('motorista inclui cliente na rota (e não duplica)');
+    assert.strictEqual((await dv('stop', { client: 'Cliente Avulso', address: '' })).status, 400);
+    r = await dv('stop', { client: 'Cliente Avulso', address: 'Rua Eta 90, Centro' }); assert.strictEqual(r.status, 201); const avulso = r.body.id;
+    for (let i = 0; i < 40; i++) { const s = (await dv('')).body.stops.find(x => x.id === avulso); if (s.geoStatus === 'ok') break; await wait(100); }
+    let me = (await dv('')).body, myPend = me.stops.filter(s => s.status === 'pendente');
+    assert.deepStrictEqual(myPend.slice(-2).map(s => s.client), ['Bar do Zé', 'Cliente Avulso']);
+    assert.ok(myPend.slice(-2).every(s => s.canRemove) && me.stops.find(s => s.id === avulso).geoStatus === 'ok'); ok('motorista inclui cliente sem cadastro (endereço localizado)');
+    assert.strictEqual((await dv('stop-move', { id: avulso, dir: -1 })).status, 200);
+    me = (await dv('')).body; myPend = me.stops.filter(s => s.status === 'pendente');
+    assert.deepStrictEqual(myPend.slice(-2).map(s => s.client), ['Cliente Avulso', 'Bar do Zé']);
+    assert.deepStrictEqual(me.stops.map(s => s.order), me.stops.map((_, i) => i + 1)); ok('motorista muda a ordem das paradas');
+    const dispatcherStop = myPend.find(s => !s.canRemove);
+    if (dispatcherStop) { assert.strictEqual((await dv('stop-remove', { id: dispatcherStop.id })).status, 403); ok('motorista não retira parada definida pelo despachante'); }
+    await wait(600);
+    let rts = (await call('GET', '/api/routes')).body; assert.ok(rts[v1.id] && rts[v1.id].byDriver && rts[v1.id].distanceM > 0); ok('rota do motorista é traçada e aparece no painel');
+    const drvBefore = (await dv('')).body.stops.map(s => s.id + ':' + s.order).join();
+    r = await call('POST', '/api/optimize'); assert.strictEqual(r.status, 200, JSON.stringify(r.body)); assert.strictEqual(r.body.vehicles, 1);
+    assert.strictEqual((await dv('')).body.stops.map(s => s.id + ':' + s.order).join(), drvBefore);
+    rts = (await call('GET', '/api/routes')).body; assert.ok(rts[v1.id] && rts[v2.id]); ok('"Otimizar rotas" respeita a rota montada pelo motorista');
+    const zeStop = (await dv('')).body.stops.find(s => s.client === 'Bar do Zé');
+    assert.strictEqual((await dv('order', { stopId: zeStop.id, items: [] })).status, 400);
+    assert.strictEqual((await dv('order', { stopId: zeStop.id, items: [{ desc: 'Água 20 L', qty: 0 }] })).status, 400);
+    assert.strictEqual((await dv('order', { stopId: zeStop.id, items: [{ desc: 'Água 20 L', qty: 1, price: 'abc' }] })).status, 400);
+    assert.strictEqual((await dv('order', { stopId: other.id, items: [{ desc: 'X', qty: 1 }] })).status, 404); ok('pedido inválido ou de outro veículo é recusado');
+    r = await dv('order', { stopId: zeStop.id, items: [{ desc: 'Água 20 L', qty: 2, unit: 'un', price: 10.5 }, { desc: 'Gelo', qty: 3, price: 1 }, { desc: 'Brinde', qty: 1 }], notes: 'pagar no pix' });
+    assert.strictEqual(r.status, 201); assert.strictEqual(r.body.total, 24); assert.strictEqual(r.body.code, '7001'); const ord = r.body;
+    st = (await call('GET', '/api/state')).body; const so = st.orders.find(o => o.id === ord.id);
+    assert.ok(so && so.vehicleId === v1.id && so.client === 'Bar do Zé' && so.items.length === 3 && so.status === 'novo'); ok('pedido do motorista aparece no painel (total R$ 24,00)');
+    assert.strictEqual((await dv('')).body.orders[0].id, ord.id); ok('motorista vê os pedidos que lançou');
+    r = await dv('order', { stopId: zeStop.id, items: [{ desc: 'Gelo', qty: 1, price: 1 }] }); assert.strictEqual(r.body.num, ord.num + 1);
+    assert.strictEqual((await dv('order-remove', { id: r.body.id })).status, 200); ok('motorista cancela pedido ainda não conferido');
+    assert.strictEqual((await call('PATCH', '/api/orders/' + ord.id, { status: 'conferido' })).status, 200);
+    assert.strictEqual((await dv('order-remove', { id: ord.id })).status, 403); ok('pedido conferido pelo escritório não pode ser cancelado pelo motorista');
+    assert.strictEqual((await dv('stop-remove', { id: avulso })).status, 200);
+    assert.ok(!(await dv('')).body.stops.some(s => s.id === avulso)); ok('motorista retira parada que incluiu');
+
     // Google (opcional)
     const gport = port + 100, gdir = fs.mkdtempSync(path.join(os.tmpdir(), 'rotasg-'));
     const gsrv = spawn('node', [path.join(__dirname, '..', 'server.js')], { env: { ...process.env, PORT: gport, DATA_DIR: gdir, GEO_GAP_MS: '0', GOOGLE_MAPS_KEY: 'CHAVE-TESTE', PHOTON_URL: '', GOOGLE_GEOCODE_URL: 'http://localhost:' + fport + '/google', CEP_URL: 'http://localhost:' + fport + '/cep', VIACEP_URL: 'http://localhost:' + fport + '/viacep' }, stdio: ['ignore', 'ignore', 'inherit'] });

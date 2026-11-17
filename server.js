@@ -39,7 +39,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 
 /* ---------------- armazenamento ---------------- */
 const store = createStore(DATA_DIR);
-const emptyDb = () => ({ vehicles: [], deliveries: [], clients: [], cepcache: {}, depot: null, settings: { suffix: '' }, routes: {}, summary: null, geocache: {} });
+const emptyDb = () => ({ vehicles: [], deliveries: [], clients: [], cepcache: {}, depot: null, settings: { suffix: '' }, routes: {}, summary: null, geocache: {}, orders: [], orderSeq: 0 });
 let db = emptyDb();
 /* Grava no máximo uma vez a cada store.delayMs; alterações feitas durante a gravação geram outra em seguida. */
 let saveTimer = null, saving = null, dirty = false, saveProblem = '';
@@ -53,6 +53,7 @@ async function reloadFromStore() {
   console.error('Outra cópia do app gravou no banco. Recarregando os dados do banco em vez de sobrescrever.');
   const fresh = await store.reload();
   db = { ...emptyDb(), ...(fresh || {}) };
+  if (!Array.isArray(db.orders)) db.orders = [];
   clientQ.length = 0;
   resumePending();
   broadcast('state', publicState()); broadcast('routes', { at: Date.now() });
@@ -92,7 +93,7 @@ const clients = new Set();
 let bcastTimer = null;
 function publicState() {
   return {
-    vehicles: db.vehicles, deliveries: db.deliveries, depot: db.depot, settings: db.settings, summary: db.summary,
+    vehicles: db.vehicles, deliveries: db.deliveries, depot: db.depot, settings: db.settings, summary: db.summary, orders: db.orders,
     geoPending: db.deliveries.filter(d => d.geoStatus === 'pendente' && !d.clientId).length + db.clients.filter(c => c.geoStatus === 'pendente').length,
     clientCount: db.clients.length, clientFailed: db.clients.filter(c => c.geoStatus === 'falhou').length,
     storageWarning: store.temporary ? 'Os dados estão num arquivo temporário e serão APAGADOS quando o servidor reiniciar. Configure a variável DATABASE_URL (veja o README).' : saveProblem
@@ -348,6 +349,7 @@ async function runGeo(id, force) {
     console.error('Busca de endereço da entrega falhou: ' + e.message);
     Object.assign(d, { geoStatus: 'falhou', geoError: 'Serviço de busca indisponível. Tente de novo.' });
   }
+  if (d.byDriver && d.vehicleId) scheduleRoute(d.vehicleId);
   changed();
 }
 
@@ -356,6 +358,7 @@ function applyClientGeo(c) {
     if (d.clientId !== c.id || d.status !== 'pendente' || d.geoStatus === 'ok') continue;
     if (c.geoStatus === 'ok') Object.assign(d, { lat: c.lat, lng: c.lng, label: c.label, approx: c.approx, geoStatus: 'ok', geoError: '' });
     else if (c.geoStatus === 'falhou') Object.assign(d, { geoStatus: 'falhou', geoError: c.geoError });
+    if (d.byDriver && d.vehicleId && d.geoStatus === 'ok') scheduleRoute(d.vehicleId);
   }
 }
 /* ----- localização de clientes: CEP, Google (opcional) e OpenStreetMap ----- */
@@ -592,16 +595,18 @@ function baselineKm(depot, vehs, stops) {
 let optimizing = false;
 async function optimize() {
   if (!db.depot) throw new HttpError(400, 'Defina o endereço do depósito na aba Frota.');
-  const vs = db.vehicles.filter(v => v.active);
-  const ps = db.deliveries.filter(d => d.status === 'pendente' && d.geoStatus === 'ok');
-  if (!vs.length) throw new HttpError(400, 'Cadastre e ative ao menos um veículo.');
+  /* Veículos cuja rota foi montada pelo próprio motorista ficam de fora: a ordem dele é respeitada. */
+  const own = driverOwned();
+  const vs = db.vehicles.filter(v => v.active && !own.has(v.id));
+  const ps = db.deliveries.filter(d => d.status === 'pendente' && d.geoStatus === 'ok' && !(d.vehicleId && own.has(d.vehicleId)));
+  if (!vs.length) throw new HttpError(400, own.size ? 'Todos os veículos ativos estão com a rota montada pelo motorista.' : 'Cadastre e ative ao menos um veículo.');
   if (!ps.length) throw new HttpError(400, 'Não há entregas pendentes com endereço localizado.');
   if (optimizing) throw new HttpError(409, 'Já existe uma otimização em andamento.');
   optimizing = true;
   try {
     const depot = db.depot, best = plan(depot, vs, ps), base = baselineKm(depot, vs, ps);
-    for (const d of db.deliveries) if (d.status === 'pendente') { d.vehicleId = null; d.order = 0; d.etaMin = null; d.legKm = null; }
-    db.routes = {};
+    for (const d of db.deliveries) if (d.status === 'pendente' && !(d.vehicleId && own.has(d.vehicleId))) { d.vehicleId = null; d.order = 0; d.etaMin = null; d.legKm = null; d.byDriver = false; }
+    for (const id of Object.keys(db.routes)) if (!own.has(id)) delete db.routes[id];
     let roadKm = 0, roadFailed = 0;
     for (let i = 0; i < vs.length; i++) {
       const v = vs[i], order = best.orders[i];
@@ -627,6 +632,88 @@ async function optimize() {
     return db.summary;
   } finally { optimizing = false; }
 }
+
+/* ---------------- rota montada pelo motorista ---------------- */
+/* Veículos com paradas pendentes lançadas ou reordenadas pelo motorista: a otimização automática não mexe neles. */
+function driverOwned() {
+  const s = new Set();
+  for (const d of db.deliveries) if (d.byDriver && d.status === 'pendente' && d.vehicleId) s.add(d.vehicleId);
+  return s;
+}
+/* Numera as paradas do veículo: entregues primeiro (na ordem em que estavam), depois as pendentes. */
+function renumber(vid) {
+  db.deliveries.filter(d => d.vehicleId === vid)
+    .sort((a, b) => (a.status === b.status ? 0 : a.status === 'entregue' ? -1 : 1) || a.order - b.order)
+    .forEach((d, i) => { d.order = i + 1; });
+}
+const routeTimers = new Map(), routeBusy = new Set();
+function scheduleRoute(vid) {
+  clearTimeout(routeTimers.get(vid));
+  routeTimers.set(vid, setTimeout(() => { routeTimers.delete(vid); routeVehicle(vid).catch(e => console.error('Rota do motorista: ' + e.message)); }, 300));
+}
+/* Traça pelas ruas a rota do veículo na ordem atual das paradas pendentes. */
+async function routeVehicle(vid) {
+  if (routeBusy.has(vid)) { scheduleRoute(vid); return; }
+  const v = db.vehicles.find(x => x.id === vid);
+  if (!v) return;
+  routeBusy.add(vid);
+  try {
+    const order = db.deliveries.filter(d => d.vehicleId === vid && d.status === 'pendente' && d.geoStatus === 'ok').sort((a, b) => a.order - b.order);
+    if (!order.length) { delete db.routes[vid]; changed(); broadcast('routes', { at: Date.now() }); return; }
+    const recent = v.updatedAt && Date.now() - v.updatedAt < 30 * 60000 && validLat(num(v.lat)) && validLng(num(v.lng));
+    const start = recent ? { lat: v.lat, lng: v.lng } : (db.depot || order[0]);
+    const end = db.depot || order[order.length - 1];
+    const pts = [start, ...order, end];
+    try {
+      const rt = await osrmRoute(pts);
+      let cum = 0;
+      order.forEach((d, j) => { cum += rt.legs[j].durationS / 60; d.etaMin = Math.round(cum); d.legKm = rt.legs[j].distanceM / 1000; cum += SERVICE_MIN; });
+      db.routes[vid] = { geometry: rt.geometry, distanceM: rt.distanceM, durationS: rt.durationS + order.length * SERVICE_MIN * 60, byDriver: true };
+    } catch (e) {
+      let cum = 0, cur = start;
+      order.forEach(d => { const km = dist(cur, d); cum += km / SPEED_KMH * 60; d.etaMin = Math.round(cum); d.legKm = km; cum += SERVICE_MIN; cur = d; });
+      db.routes[vid] = { geometry: pts.map(x => [x.lat, x.lng]), distanceM: pathKm(start, order, end) * 1000, durationS: cum * 60, straight: true, byDriver: true };
+    }
+    changed(); broadcast('routes', { at: Date.now() });
+  } finally { routeBusy.delete(vid); }
+}
+function searchClients(qRaw, limit = 8) {
+  const q = norm(qRaw);
+  if (!q) return [];
+  const scored = [];
+  for (const c of db.clients) {
+    const code = norm(c.code), name = norm(c.name); let s = 9;
+    if (code && code === q) s = 0;
+    else if (code && code.startsWith(q)) s = 1;
+    else if (name.startsWith(q)) s = 2;
+    else if (name.split(/\s+/).some(w => w.startsWith(q))) s = 3;
+    else if (name.includes(q)) s = 4;
+    else if (q.length >= 3 && norm(c.address).includes(q)) s = 5;
+    if (s < 9) scored.push([s, c]);
+  }
+  scored.sort((a, b) => a[0] - b[0] || a[1].name.localeCompare(b[1].name, 'pt-BR'));
+  return scored.slice(0, limit).map(([, c]) => c);
+}
+
+/* ---------------- pedidos lançados pelo motorista ---------------- */
+const money = n => Math.round(n * 100) / 100;
+function orderItems(list) {
+  if (!Array.isArray(list)) throw new HttpError(400, 'Informe os itens do pedido.');
+  const items = [];
+  for (const it of list.slice(0, 100)) {
+    if (!it || typeof it !== 'object') continue;
+    const desc = str(it.desc, 120);
+    if (!desc) continue;
+    const qty = num(it.qty), price = it.price === '' || it.price == null ? null : num(it.price);
+    if (qty === null || qty <= 0 || qty > 1e6) throw new HttpError(400, 'Quantidade inválida em "' + desc + '".');
+    if (price !== null && (price < 0 || price > 1e7)) throw new HttpError(400, 'Preço inválido em "' + desc + '".');
+    if (it.price != null && it.price !== '' && price === null) throw new HttpError(400, 'Preço inválido em "' + desc + '".');
+    items.push({ desc, qty, unit: str(it.unit, 10), price: price === null ? null : money(price) });
+  }
+  if (!items.length) throw new HttpError(400, 'Inclua ao menos um item no pedido.');
+  return items;
+}
+const orderTotal = items => money(items.reduce((t, it) => t + (it.price === null ? 0 : it.price * it.qty), 0));
 
 /* ---------------- API do despachante ---------------- */
 function vehicleView(body, v) {
@@ -751,22 +838,8 @@ async function adminApi(req, res, url, p) {
     }
   }
   if (p === '/api/clients/search' && m === 'GET') {
-    const q = norm(str(url.searchParams.get('q') || '', 80));
-    if (!q) return json(res, 200, { results: [] });
     const inRoute = new Set(db.deliveries.filter(d => d.status === 'pendente' && d.clientId).map(d => d.clientId));
-    const scored = [];
-    for (const c of db.clients) {
-      const code = norm(c.code), name = norm(c.name); let s = 9;
-      if (code && code === q) s = 0;
-      else if (code && code.startsWith(q)) s = 1;
-      else if (name.startsWith(q)) s = 2;
-      else if (name.split(/\s+/).some(w => w.startsWith(q))) s = 3;
-      else if (name.includes(q)) s = 4;
-      else if (q.length >= 3 && norm(c.address).includes(q)) s = 5;
-      if (s < 9) scored.push([s, c]);
-    }
-    scored.sort((a, b) => a[0] - b[0] || a[1].name.localeCompare(b[1].name, 'pt-BR'));
-    return json(res, 200, { results: scored.slice(0, 8).map(([, c]) => ({ id: c.id, code: c.code, name: c.name, address: c.address, notes: c.notes, lat: c.lat, lng: c.lng, label: c.label, approx: c.approx, geoStatus: c.geoStatus, geoSource: c.geoSource || '', inRoute: inRoute.has(c.id) })) });
+    return json(res, 200, { results: searchClients(str(url.searchParams.get('q') || '', 80)).map(c => ({ id: c.id, code: c.code, name: c.name, address: c.address, notes: c.notes, lat: c.lat, lng: c.lng, label: c.label, approx: c.approx, geoStatus: c.geoStatus, geoSource: c.geoSource || '', inRoute: inRoute.has(c.id) })) });
   }
   if (p === '/api/clients/import' && m === 'POST') {
     const b = await readBody(req, 14e6);
@@ -820,6 +893,17 @@ async function adminApi(req, res, url, p) {
     }
   }
   if (p === '/api/clients/clear' && m === 'POST') { db.clients = []; changed(); return json(res, 200, { ok: true }); }
+  if ((mm = p.match(/^\/api\/orders\/([a-f0-9]+)$/))) {
+    const o = db.orders.find(x => x.id === mm[1]);
+    if (!o) throw new HttpError(404, 'Pedido não encontrado.');
+    if (m === 'DELETE') { db.orders = db.orders.filter(x => x.id !== o.id); changed(); return json(res, 200, { ok: true }); }
+    if (m === 'PATCH') {
+      const b = await readBody(req, 50000);
+      if (b.status !== undefined) { if (!['novo', 'conferido'].includes(b.status)) throw new HttpError(400, 'Situação inválida.'); o.status = b.status; }
+      if (b.notes !== undefined) o.notes = str(b.notes, 300);
+      o.updatedAt = Date.now(); changed(); return json(res, 200, o);
+    }
+  }
   if (p === '/api/optimize' && m === 'POST') return json(res, 200, await optimize());
   if (p === '/api/clear-day' && m === 'POST') {
     db.deliveries = []; db.routes = {}; db.summary = null;
@@ -831,15 +915,22 @@ async function adminApi(req, res, url, p) {
 }
 
 /* ---------------- API do motorista (acesso por link pessoal) ---------------- */
-async function driverApi(req, res, token, action) {
+async function driverApi(req, res, token, action, url) {
   const v = db.vehicles.find(x => x.token === token);
   if (!v) throw new HttpError(404, 'Link inválido. Peça um novo link ao despachante.');
   const m = req.method;
   const pending = () => db.deliveries.filter(d => d.vehicleId === v.id && d.status === 'pendente').sort((a, b) => a.order - b.order);
+  const mineStop = id => {
+    const d = db.deliveries.find(x => x.id === str(id, 40) && x.vehicleId === v.id);
+    if (!d) throw new HttpError(404, 'Parada não encontrada neste veículo.');
+    return d;
+  };
   if (!action && m === 'GET') {
     const mine = db.deliveries.filter(d => d.vehicleId === v.id).sort((a, b) => a.order - b.order)
-      .map(d => ({ id: d.id, client: d.client, address: d.address, notes: d.notes, priority: d.priority, lat: d.lat, lng: d.lng, order: d.order, etaMin: d.etaMin, legKm: d.legKm, status: d.status, deliveredAt: d.deliveredAt }));
-    return json(res, 200, { vehicle: { name: v.name, plate: v.plate, driver: v.driver, active: v.active }, depot: db.depot ? { lat: db.depot.lat, lng: db.depot.lng } : null, stops: mine });
+      .map(d => ({ id: d.id, client: d.client, code: d.code, address: d.address, notes: d.notes, priority: d.priority, lat: d.lat, lng: d.lng, order: d.order, etaMin: d.etaMin, legKm: d.legKm, status: d.status, deliveredAt: d.deliveredAt, canRemove: !!(d.addedByDriver || d.takenByDriver), geoStatus: d.geoStatus, approx: d.approx }));
+    const since = Date.now() - 24 * 3600000;
+    const orders = db.orders.filter(o => o.vehicleId === v.id && o.createdAt >= since).sort((a, b) => b.createdAt - a.createdAt);
+    return json(res, 200, { vehicle: { name: v.name, plate: v.plate, driver: v.driver, active: v.active }, depot: db.depot ? { lat: db.depot.lat, lng: db.depot.lng } : null, stops: mine, orders, hasClients: db.clients.length > 0 });
   }
   if (action === 'position' && m === 'POST') {
     const b = await readBody(req, 2000), lat = num(b.lat), lng = num(b.lng);
@@ -854,7 +945,87 @@ async function driverApi(req, res, token, action) {
     if (!d) throw new HttpError(404, 'Entrega não encontrada neste veículo.');
     if (d.status !== 'entregue') { d.status = 'entregue'; d.deliveredAt = Date.now(); }
     v.status = pending().length ? 'em_rota' : 'livre';
+    if (d.byDriver) scheduleRoute(v.id);
     changed(); return json(res, 200, { ok: true });
+  }
+  if (action === 'clients' && m === 'GET') {
+    const taken = new Map(db.deliveries.filter(d => d.status === 'pendente' && d.clientId).map(d => [d.clientId, d.vehicleId]));
+    const known = new Set(db.vehicles.map(x => x.id));
+    return json(res, 200, { results: searchClients(str(url.searchParams.get('q') || '', 80)).map(c => ({
+      id: c.id, code: c.code, name: c.name, address: c.address, geoStatus: c.geoStatus,
+      inMyRoute: taken.get(c.id) === v.id, inOtherRoute: taken.has(c.id) && taken.get(c.id) !== v.id && known.has(taken.get(c.id))
+    })) });
+  }
+  if (action === 'stop' && m === 'POST') {
+    const b = await readBody(req, 5000);
+    const c = b.clientId ? db.clients.find(x => x.id === str(b.clientId, 40)) : null;
+    if (b.clientId && !c) throw new HttpError(404, 'Cliente não encontrado.');
+    let d;
+    if (c) {
+      const cur = db.deliveries.find(x => x.clientId === c.id && x.status === 'pendente');
+      if (cur && cur.vehicleId === v.id) throw new HttpError(409, c.name + ' já está na sua rota.');
+      if (cur && cur.vehicleId && db.vehicles.some(x => x.id === cur.vehicleId)) throw new HttpError(409, c.name + ' já está na rota de outro veículo. Fale com o despachante.');
+      if (cur) { d = cur; d.takenByDriver = true; } // estava sem rota: o motorista assume
+      else {
+        d = newDelivery({ client: c.name, address: c.address, notes: c.notes }, Date.now());
+        Object.assign(d, { clientId: c.id, code: c.code || '' });
+        if (c.geoStatus === 'ok') Object.assign(d, { lat: c.lat, lng: c.lng, label: c.label, approx: c.approx, geoStatus: 'ok', geoError: '' });
+        else if (c.geoStatus === 'falhou') Object.assign(d, { geoStatus: 'falhou', geoError: c.geoError });
+        else d.geoStatus = 'pendente';
+        d.addedByDriver = true; db.deliveries.push(d);
+      }
+    } else {
+      if (!str(b.client, 120)) throw new HttpError(400, 'Informe o nome do cliente.');
+      d = newDelivery({ client: b.client, address: b.address, notes: b.notes }, Date.now());
+      if (!d) throw new HttpError(400, 'Informe o endereço do cliente.');
+      d.addedByDriver = true; db.deliveries.push(d);
+    }
+    const last = db.deliveries.filter(x => x.vehicleId === v.id).reduce((mx, x) => Math.max(mx, x.order || 0), 0);
+    Object.assign(d, { vehicleId: v.id, order: last + 1, byDriver: true, etaMin: null, legKm: null });
+    if (d.geoStatus === 'pendente' && !d.clientId) runGeo(d.id);
+    renumber(v.id); scheduleRoute(v.id); changed();
+    return json(res, 201, { id: d.id });
+  }
+  if (action === 'stop-remove' && m === 'POST') {
+    const d = mineStop((await readBody(req, 2000)).id);
+    if (d.status !== 'pendente') throw new HttpError(400, 'Esta parada já foi entregue.');
+    if (d.addedByDriver) db.deliveries = db.deliveries.filter(x => x.id !== d.id);
+    else if (d.takenByDriver) Object.assign(d, { vehicleId: null, order: 0, etaMin: null, legKm: null, byDriver: false, takenByDriver: false });
+    else throw new HttpError(403, 'Esta parada foi definida pelo despachante. Fale com ele para retirar.');
+    renumber(v.id); scheduleRoute(v.id); changed();
+    return json(res, 200, { ok: true });
+  }
+  if (action === 'stop-move' && m === 'POST') {
+    const b = await readBody(req, 2000), d = mineStop(b.id), dir = b.dir === -1 ? -1 : 1;
+    const list = pending(), i = list.indexOf(d), j = i + dir;
+    if (i < 0 || j < 0 || j >= list.length) return json(res, 200, { ok: true });
+    [list[i].order, list[j].order] = [list[j].order, list[i].order];
+    for (const x of list) x.byDriver = true; // o motorista assumiu a ordem desta rota
+    renumber(v.id); scheduleRoute(v.id); changed();
+    return json(res, 200, { ok: true });
+  }
+  if (action === 'order' && m === 'POST') {
+    const b = await readBody(req, 50000);
+    const d = b.stopId ? mineStop(b.stopId) : null;
+    if (!d) throw new HttpError(400, 'Escolha o cliente (parada) do pedido.');
+    const items = orderItems(b.items);
+    const c = d.clientId ? db.clients.find(x => x.id === d.clientId) : null;
+    db.orderSeq = (db.orderSeq || 0) + 1;
+    const o = {
+      id: uid(), num: db.orderSeq, vehicleId: v.id, vehicleName: v.name, driver: v.driver || '', stopId: d.id, clientId: d.clientId || '',
+      code: (c && c.code) || d.code || '', client: d.client, address: d.address, items, total: orderTotal(items), notes: str(b.notes, 300),
+      status: 'novo', createdAt: Date.now(), updatedAt: null
+    };
+    db.orders.push(o); changed();
+    return json(res, 201, o);
+  }
+  if (action === 'order-remove' && m === 'POST') {
+    const b = await readBody(req, 2000);
+    const o = db.orders.find(x => x.id === str(b.id, 40) && x.vehicleId === v.id);
+    if (!o) throw new HttpError(404, 'Pedido não encontrado.');
+    if (o.status !== 'novo') throw new HttpError(403, 'O escritório já conferiu este pedido. Fale com o despachante.');
+    db.orders = db.orders.filter(x => x.id !== o.id); changed();
+    return json(res, 200, { ok: true });
   }
   throw new HttpError(404, 'Não encontrado.');
 }
@@ -878,7 +1049,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/healthz') return json(res, 200, { ok: true });
     let m;
     if ((m = p.match(/^\/m\/([a-f0-9]{16,64})$/)) && req.method === 'GET') return sendFile(res, 'motorista.html');
-    if ((m = p.match(/^\/api\/driver\/([a-f0-9]{16,64})(?:\/(position|deliver))?$/))) return await driverApi(req, res, m[1], m[2]);
+    if ((m = p.match(/^\/api\/driver\/([a-f0-9]{16,64})(?:\/(position|deliver|clients|stop|stop-remove|stop-move|order|order-remove))?$/))) return await driverApi(req, res, m[1], m[2], url);
     if (!isAdmin(req)) {
       res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Painel de Rotas", charset="UTF-8"', 'Content-Type': 'text/plain; charset=utf-8' });
       return res.end('Acesso restrito. Informe a senha do painel.');
@@ -898,6 +1069,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const saved = await store.load();
     if (saved) db = { ...db, ...saved };
+    if (!Array.isArray(db.orders)) db.orders = [];
   } catch (e) {
     console.error('Não foi possível carregar os dados (' + store.kind + '): ' + e.message);
     process.exit(1);

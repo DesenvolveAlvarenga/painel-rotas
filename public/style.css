@@ -120,3 +120,13 @@ table.pv td:first-child{font-weight:600;width:34%}
 .sugg-empty{padding:10px 12px;font-size:13px;color:var(--muted)}
 .code{font:600 12px var(--f-mono);background:var(--surface2);border:1px solid var(--line);border-radius:5px;padding:0 6px;margin-right:6px;color:var(--ink)}
 .row .code{margin-right:6px}
+
+/* pedidos */
+.badge{display:inline-block;min-width:18px;padding:0 5px;border-radius:999px;background:var(--alta);color:#fff;font:600 11px/18px var(--f-mono);text-align:center;margin-left:4px}
+.ocard{border:1px solid var(--line);border-radius:8px;padding:12px;display:grid;gap:8px;border-left:4px solid var(--c,var(--line))}
+.ocard.novo{background:var(--surface2)}
+.ohead{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 10px;align-items:baseline}
+.ohead .tot{font:600 15px var(--f-mono);font-variant-numeric:tabular-nums}
+table.items{border-collapse:collapse;width:100%;font-size:13px}
+table.items td{border-bottom:1px solid var(--line);padding:4px 6px;vertical-align:top;overflow-wrap:anywhere}
+table.items td.n{text-align:right;font-family:var(--f-mono);white-space:nowrap}
