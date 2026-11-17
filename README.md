@@ -92,15 +92,13 @@ Para montar a rota do dia, na aba **Entregas** digite o código ou o nome no cam
 - Resultado marcado **"confira a cidade"**: nada foi achado na cidade digitada; pode ser uma rua de mesmo nome em outro lugar.
 - Rua que não existe no mapa gratuito: use **"Não achou? Marcar o ponto no mapa"** e clique no local.
 
-## Rota e pedidos pelo motorista
+## Rota montada pelo motorista
 No link pessoal, o motorista pode:
-- **Montar a rota:** buscar clientes do cadastro pelo código ou nome, ou informar nome e endereço de um cliente sem cadastro, e mudar a ordem das visitas com ↑ e ↓. A rota é traçada pelas ruas e aparece na hora no mapa do painel. Ele só pode tirar da rota as paradas que ele mesmo incluiu.
-- **Lançar pedidos:** em cada parada, toque em **Pedido** e informe produto, quantidade e preço unitário (o preço é opcional). O total é calculado sozinho. Enquanto o escritório não conferir, ele pode cancelar o pedido.
+- **Montar a rota:** buscar clientes do cadastro pelo código ou nome, ou informar nome e endereço de um cliente sem cadastro. Ele só pode tirar da rota as paradas que ele mesmo incluiu.
+- **Mudar a ordem** das visitas com ↑ e ↓.
+- **Otimizar a rota:** o botão "Otimizar minha rota" calcula a ordem mais curta das paradas pendentes, a partir de onde ele está (com a localização compartilhada) ou do depósito, terminando no depósito. Paradas com prioridade alta vêm antes. Paradas sem endereço localizado ficam no fim.
 
-No painel:
-- A aba **Pedidos** mostra os pedidos que chegam em tempo real, com aviso na tela e contador dos que faltam conferir. Dá para filtrar por dia, veículo e situação, marcar como conferido, excluir e baixar uma planilha (.csv, uma linha por item).
-- Na aba **Entregas**, a rota montada pelo motorista aparece marcada. **"Otimizar rotas" não mexe nela** enquanto houver paradas pendentes que ele incluiu ou reordenou; os outros veículos são otimizados normalmente.
-- Os pedidos ficam guardados mesmo depois de "Limpar o dia".
+A rota é traçada pelas ruas e aparece na hora no mapa do painel, marcada como "Rota montada pelo motorista". **"Otimizar rotas" do painel não mexe nela** enquanto houver paradas pendentes que ele incluiu, reordenou ou otimizou; os outros veículos são otimizados normalmente.
 
 ## Mais precisão nos endereços (opcional): Google
 A busca gratuita (OpenStreetMap) erra ou não conhece algumas ruas e números do Brasil. Para melhorar muito a precisão, crie uma chave da API "Geocoding" no Google Cloud e informe na variável `GOOGLE_MAPS_KEY`. O sistema passa a usar o Google para localizar os clientes (com CEP e número) e continua guardando o resultado para não pagar duas vezes. Confira o preço e a cota gratuita atuais no site do Google antes de ativar; a conta exige cartão.

@@ -39,7 +39,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 
 /* ---------------- armazenamento ---------------- */
 const store = createStore(DATA_DIR);
-const emptyDb = () => ({ vehicles: [], deliveries: [], clients: [], cepcache: {}, depot: null, settings: { suffix: '' }, routes: {}, summary: null, geocache: {}, orders: [], orderSeq: 0 });
+const emptyDb = () => ({ vehicles: [], deliveries: [], clients: [], cepcache: {}, depot: null, settings: { suffix: '' }, routes: {}, summary: null, geocache: {} });
 let db = emptyDb();
 /* Grava no máximo uma vez a cada store.delayMs; alterações feitas durante a gravação geram outra em seguida. */
 let saveTimer = null, saving = null, dirty = false, saveProblem = '';
@@ -53,7 +53,6 @@ async function reloadFromStore() {
   console.error('Outra cópia do app gravou no banco. Recarregando os dados do banco em vez de sobrescrever.');
   const fresh = await store.reload();
   db = { ...emptyDb(), ...(fresh || {}) };
-  if (!Array.isArray(db.orders)) db.orders = [];
   clientQ.length = 0;
   resumePending();
   broadcast('state', publicState()); broadcast('routes', { at: Date.now() });
@@ -93,7 +92,7 @@ const clients = new Set();
 let bcastTimer = null;
 function publicState() {
   return {
-    vehicles: db.vehicles, deliveries: db.deliveries, depot: db.depot, settings: db.settings, summary: db.summary, orders: db.orders,
+    vehicles: db.vehicles, deliveries: db.deliveries, depot: db.depot, settings: db.settings, summary: db.summary,
     geoPending: db.deliveries.filter(d => d.geoStatus === 'pendente' && !d.clientId).length + db.clients.filter(c => c.geoStatus === 'pendente').length,
     clientCount: db.clients.length, clientFailed: db.clients.filter(c => c.geoStatus === 'falhou').length,
     storageWarning: store.temporary ? 'Os dados estão num arquivo temporário e serão APAGADOS quando o servidor reiniciar. Configure a variável DATABASE_URL (veja o README).' : saveProblem
@@ -695,26 +694,6 @@ function searchClients(qRaw, limit = 8) {
   return scored.slice(0, limit).map(([, c]) => c);
 }
 
-/* ---------------- pedidos lançados pelo motorista ---------------- */
-const money = n => Math.round(n * 100) / 100;
-function orderItems(list) {
-  if (!Array.isArray(list)) throw new HttpError(400, 'Informe os itens do pedido.');
-  const items = [];
-  for (const it of list.slice(0, 100)) {
-    if (!it || typeof it !== 'object') continue;
-    const desc = str(it.desc, 120);
-    if (!desc) continue;
-    const qty = num(it.qty), price = it.price === '' || it.price == null ? null : num(it.price);
-    if (qty === null || qty <= 0 || qty > 1e6) throw new HttpError(400, 'Quantidade inválida em "' + desc + '".');
-    if (price !== null && (price < 0 || price > 1e7)) throw new HttpError(400, 'Preço inválido em "' + desc + '".');
-    if (it.price != null && it.price !== '' && price === null) throw new HttpError(400, 'Preço inválido em "' + desc + '".');
-    items.push({ desc, qty, unit: str(it.unit, 10), price: price === null ? null : money(price) });
-  }
-  if (!items.length) throw new HttpError(400, 'Inclua ao menos um item no pedido.');
-  return items;
-}
-const orderTotal = items => money(items.reduce((t, it) => t + (it.price === null ? 0 : it.price * it.qty), 0));
-
 /* ---------------- API do despachante ---------------- */
 function vehicleView(body, v) {
   const name = str(body.name, 40), plate = str(body.plate, 12).toUpperCase(), driver = str(body.driver, 60);
@@ -893,17 +872,6 @@ async function adminApi(req, res, url, p) {
     }
   }
   if (p === '/api/clients/clear' && m === 'POST') { db.clients = []; changed(); return json(res, 200, { ok: true }); }
-  if ((mm = p.match(/^\/api\/orders\/([a-f0-9]+)$/))) {
-    const o = db.orders.find(x => x.id === mm[1]);
-    if (!o) throw new HttpError(404, 'Pedido não encontrado.');
-    if (m === 'DELETE') { db.orders = db.orders.filter(x => x.id !== o.id); changed(); return json(res, 200, { ok: true }); }
-    if (m === 'PATCH') {
-      const b = await readBody(req, 50000);
-      if (b.status !== undefined) { if (!['novo', 'conferido'].includes(b.status)) throw new HttpError(400, 'Situação inválida.'); o.status = b.status; }
-      if (b.notes !== undefined) o.notes = str(b.notes, 300);
-      o.updatedAt = Date.now(); changed(); return json(res, 200, o);
-    }
-  }
   if (p === '/api/optimize' && m === 'POST') return json(res, 200, await optimize());
   if (p === '/api/clear-day' && m === 'POST') {
     db.deliveries = []; db.routes = {}; db.summary = null;
@@ -928,9 +896,7 @@ async function driverApi(req, res, token, action, url) {
   if (!action && m === 'GET') {
     const mine = db.deliveries.filter(d => d.vehicleId === v.id).sort((a, b) => a.order - b.order)
       .map(d => ({ id: d.id, client: d.client, code: d.code, address: d.address, notes: d.notes, priority: d.priority, lat: d.lat, lng: d.lng, order: d.order, etaMin: d.etaMin, legKm: d.legKm, status: d.status, deliveredAt: d.deliveredAt, canRemove: !!(d.addedByDriver || d.takenByDriver), geoStatus: d.geoStatus, approx: d.approx }));
-    const since = Date.now() - 24 * 3600000;
-    const orders = db.orders.filter(o => o.vehicleId === v.id && o.createdAt >= since).sort((a, b) => b.createdAt - a.createdAt);
-    return json(res, 200, { vehicle: { name: v.name, plate: v.plate, driver: v.driver, active: v.active }, depot: db.depot ? { lat: db.depot.lat, lng: db.depot.lng } : null, stops: mine, orders, hasClients: db.clients.length > 0 });
+    return json(res, 200, { vehicle: { name: v.name, plate: v.plate, driver: v.driver, active: v.active }, depot: db.depot ? { lat: db.depot.lat, lng: db.depot.lng } : null, stops: mine, hasClients: db.clients.length > 0 });
   }
   if (action === 'position' && m === 'POST') {
     const b = await readBody(req, 2000), lat = num(b.lat), lng = num(b.lng);
@@ -1004,28 +970,18 @@ async function driverApi(req, res, token, action, url) {
     renumber(v.id); scheduleRoute(v.id); changed();
     return json(res, 200, { ok: true });
   }
-  if (action === 'order' && m === 'POST') {
-    const b = await readBody(req, 50000);
-    const d = b.stopId ? mineStop(b.stopId) : null;
-    if (!d) throw new HttpError(400, 'Escolha o cliente (parada) do pedido.');
-    const items = orderItems(b.items);
-    const c = d.clientId ? db.clients.find(x => x.id === d.clientId) : null;
-    db.orderSeq = (db.orderSeq || 0) + 1;
-    const o = {
-      id: uid(), num: db.orderSeq, vehicleId: v.id, vehicleName: v.name, driver: v.driver || '', stopId: d.id, clientId: d.clientId || '',
-      code: (c && c.code) || d.code || '', client: d.client, address: d.address, items, total: orderTotal(items), notes: str(b.notes, 300),
-      status: 'novo', createdAt: Date.now(), updatedAt: null
-    };
-    db.orders.push(o); changed();
-    return json(res, 201, o);
-  }
-  if (action === 'order-remove' && m === 'POST') {
-    const b = await readBody(req, 2000);
-    const o = db.orders.find(x => x.id === str(b.id, 40) && x.vehicleId === v.id);
-    if (!o) throw new HttpError(404, 'Pedido não encontrado.');
-    if (o.status !== 'novo') throw new HttpError(403, 'O escritório já conferiu este pedido. Fale com o despachante.');
-    db.orders = db.orders.filter(x => x.id !== o.id); changed();
-    return json(res, 200, { ok: true });
+  if (action === 'optimize' && m === 'POST') {
+    const list = pending(), located = list.filter(d => d.geoStatus === 'ok'), rest = list.filter(d => d.geoStatus !== 'ok');
+    if (located.length < 2) throw new HttpError(400, 'Você precisa de ao menos 2 paradas pendentes com endereço localizado para otimizar.');
+    const recent = v.updatedAt && Date.now() - v.updatedAt < 30 * 60000 && validLat(num(v.lat)) && validLng(num(v.lng));
+    const start = recent ? { lat: v.lat, lng: v.lng } : (db.depot || located[0]);
+    const end = db.depot || start;
+    const before = pathKm(start, located, end);
+    const best = buildOrder(start, located, end);
+    const doneCount = db.deliveries.filter(d => d.vehicleId === v.id && d.status !== 'pendente').length;
+    [...best, ...rest].forEach((d, i) => { d.order = doneCount + i + 1; d.byDriver = true; });
+    renumber(v.id); scheduleRoute(v.id); changed();
+    return json(res, 200, { stops: best.length, beforeKm: before, afterKm: pathKm(start, best, end), fromGps: !!recent, unlocated: rest.length });
   }
   throw new HttpError(404, 'Não encontrado.');
 }
@@ -1049,7 +1005,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/healthz') return json(res, 200, { ok: true });
     let m;
     if ((m = p.match(/^\/m\/([a-f0-9]{16,64})$/)) && req.method === 'GET') return sendFile(res, 'motorista.html');
-    if ((m = p.match(/^\/api\/driver\/([a-f0-9]{16,64})(?:\/(position|deliver|clients|stop|stop-remove|stop-move|order|order-remove))?$/))) return await driverApi(req, res, m[1], m[2], url);
+    if ((m = p.match(/^\/api\/driver\/([a-f0-9]{16,64})(?:\/(position|deliver|clients|stop|stop-remove|stop-move|optimize))?$/))) return await driverApi(req, res, m[1], m[2], url);
     if (!isAdmin(req)) {
       res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Painel de Rotas", charset="UTF-8"', 'Content-Type': 'text/plain; charset=utf-8' });
       return res.end('Acesso restrito. Informe a senha do painel.');
@@ -1069,7 +1025,6 @@ const server = http.createServer(async (req, res) => {
   try {
     const saved = await store.load();
     if (saved) db = { ...db, ...saved };
-    if (!Array.isArray(db.orders)) db.orders = [];
   } catch (e) {
     console.error('Não foi possível carregar os dados (' + store.kind + '): ' + e.message);
     process.exit(1);

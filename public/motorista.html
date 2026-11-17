@@ -50,19 +50,6 @@ textarea{min-height:64px;resize:vertical}
 .res{display:grid;gap:2px;text-align:left;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface2);color:var(--ink);font:15px system-ui,sans-serif;cursor:pointer;width:100%}
 .res[disabled]{opacity:.6;cursor:default}
 .linkbtn{background:none;border:0;padding:6px 0;color:var(--accent);font:600 15px system-ui,sans-serif;cursor:pointer;text-align:left;justify-self:start}
-.order{border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:grid;gap:4px}
-.order ul{margin:0;padding-left:18px;font-size:14px}
-.order .top{display:flex;justify-content:space-between;gap:8px;align-items:baseline;flex-wrap:wrap}
-.tot{font-weight:700;font-variant-numeric:tabular-nums}
-/* formulário de pedido */
-dialog{border:0;border-radius:14px;padding:0;width:min(560px,calc(100vw - 24px));max-height:calc(100vh - 24px);background:var(--surface);color:var(--ink)}
-dialog::backdrop{background:rgba(0,0,0,.5)}
-dialog form{display:grid;gap:12px;padding:16px}
-.item{display:grid;grid-template-columns:minmax(0,1fr) 72px 92px 40px;gap:6px;align-items:end}
-.item .del{min-height:44px;background:none;border:1px solid var(--line);border-radius:8px;color:var(--muted);font-size:18px;cursor:pointer}
-@media (max-width:420px){.item{grid-template-columns:minmax(0,1fr) 64px 84px 40px}}
-.item label span{font-size:12px;font-weight:500;color:var(--muted)}
-.sumline{display:flex;justify-content:space-between;align-items:center;font-size:17px}
 </style>
 </head>
 <body>
@@ -78,6 +65,8 @@ dialog form{display:grid;gap:12px;padding:16px}
 
   <section class="card" id="routebox" hidden>
     <h2>Minha rota</h2>
+    <button class="btn primary" id="btn-opt" type="button" hidden>Otimizar minha rota</button>
+    <p class="muted" id="optnote" hidden></p>
     <ul class="stops" id="list"></ul>
     <p class="muted" id="routehint"></p>
   </section>
@@ -94,24 +83,7 @@ dialog form{display:grid;gap:12px;padding:16px}
     </div>
   </section>
 
-  <section class="card" id="ordersbox" hidden>
-    <h2>Pedidos lançados hoje</h2>
-    <div id="orders" style="display:grid;gap:8px"></div>
-    <div class="sumline"><span class="muted">Total do dia</span><span class="tot" id="ordtotal"></span></div>
-  </section>
 </main>
-
-<dialog id="dlg" aria-labelledby="dlg-t">
-  <form id="oform" method="dialog" autocomplete="off">
-    <div><h2 id="dlg-t">Novo pedido</h2><p class="muted" id="dlg-client"></p></div>
-    <div id="items" style="display:grid;gap:8px"></div>
-    <button class="linkbtn" id="btn-item" type="button">+ Adicionar item</button>
-    <label>Observação<textarea id="o-notes" maxlength="300" placeholder="Opcional: forma de pagamento, prazo de entrega…"></textarea></label>
-    <div class="sumline"><span class="muted">Total</span><span class="tot" id="o-total">R$ 0,00</span></div>
-    <p id="o-msg" style="color:var(--alta);margin:0;font-size:14px"></p>
-    <div class="two"><button class="btn" type="button" id="btn-ocancel">Cancelar</button><button class="btn primary" type="submit" id="btn-osave">Salvar pedido</button></div>
-  </form>
-</dialog>
 
 <script>
 'use strict';
@@ -124,17 +96,7 @@ function h(tag, props = {}, ...kids) {
 }
 const token = location.pathname.split('/').pop();
 const fmtMin = m => (m < 60 ? Math.round(m) + ' min' : Math.floor(m / 60) + ' h ' + String(Math.round(m % 60)).padStart(2, '0'));
-const brl = n => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-const fmtQty = n => n.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
-const hour = t => new Date(t).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-/* "1.234,50" → 1234.5 · "12,5" → 12.5 · "" → null */
-function parseNum(s) {
-  s = String(s || '').replace(/\s|R\$/g, '');
-  if (!s) return null;
-  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
-  const n = Number(s);
-  return Number.isFinite(n) ? n : NaN;
-}
+const fmtKm = km => km.toFixed(1).replace('.', ',') + ' km';
 let data = null, watchId = null, lastPos = null, lastSent = 0, sharing = false, wake = null;
 
 async function call(path, body, method) {
@@ -146,9 +108,8 @@ async function call(path, body, method) {
 const say = t => { $('#msg').textContent = t || ''; };
 async function load() {
   try { data = await call(''); render(); }
-  catch (e) { $('#sub').textContent = e.message; $('#next').replaceChildren(); ['#routebox', '#addbox', '#ordersbox'].forEach(s => { $(s).hidden = true; }); }
+  catch (e) { $('#sub').textContent = e.message; $('#next').replaceChildren(); ['#routebox', '#addbox'].forEach(s => { $(s).hidden = true; }); }
 }
-function ordersOf(stopId) { return data.orders.filter(o => o.stopId === stopId); }
 function render() {
   const v = data.vehicle;
   $('#title').textContent = v.name + (v.plate ? ' · ' + v.plate : '');
@@ -159,63 +120,45 @@ function render() {
   if (!data.stops.length) box.append(h('div', { class: 'card' }, h('div', { class: 'big' }, 'Sem paradas por enquanto'), h('p', { class: 'muted' }, 'Adicione os clientes que vai visitar logo abaixo, ou aguarde o escritório gerar a rota.')));
   else if (!pend.length) box.append(h('div', { class: 'card' }, h('div', { class: 'big' }, 'Rota concluída'), h('p', { class: 'muted' }, done + ' de ' + data.stops.length + ' paradas feitas. Volte ao depósito.')));
   else {
-    const s = pend[0], dest = s.lat + ',' + s.lng, n = ordersOf(s.id).length;
+    const s = pend[0], dest = s.lat + ',' + s.lng;
     box.append(h('div', { class: 'card' },
       h('span', { class: 'muted' }, 'Próxima parada · ' + (done + 1) + ' de ' + data.stops.length),
       h('div', { class: 'big' }, s.client), h('div', {}, s.address),
       s.notes ? h('div', { class: 'muted' }, 'Obs.: ' + s.notes) : null,
       h('div', { class: 'chips' }, s.priority === 'alta' ? h('span', { class: 'chip alta' }, 'Prioridade alta') : null,
         s.etaMin != null ? h('span', { class: 'chip' }, 'Chegada em cerca de ' + fmtMin(s.etaMin)) : null,
-        s.geoStatus === 'pendente' ? h('span', { class: 'chip' }, 'Localizando endereço…') : null,
-        n ? h('span', { class: 'chip ok' }, n + (n > 1 ? ' pedidos' : ' pedido')) : null),
+        s.geoStatus === 'pendente' ? h('span', { class: 'chip' }, 'Localizando endereço…') : null),
       s.lat != null ? h('div', { class: 'two' },
         h('a', { class: 'btn', href: 'https://waze.com/ul?ll=' + dest + '&navigate=yes', target: '_blank', rel: 'noopener' }, 'Abrir no Waze'),
         h('a', { class: 'btn', href: 'https://www.google.com/maps/dir/?api=1&destination=' + dest + '&travelmode=driving', target: '_blank', rel: 'noopener' }, 'Google Maps')) : null,
-      h('div', { class: 'two' },
-        h('button', { class: 'btn', type: 'button', onclick: () => openOrder(s) }, 'Lançar pedido'),
-        h('button', { class: 'btn primary', type: 'button', onclick: ev => deliver(s, ev.currentTarget) }, 'Entreguei'))));
+      h('button', { class: 'btn primary', type: 'button', onclick: ev => deliver(s, ev.currentTarget) }, 'Entreguei')));
   }
-  renderRoute(); renderOrders();
+  renderRoute();
 }
 function renderRoute() {
   const ul = $('#list'); ul.replaceChildren();
   $('#routebox').hidden = !data.stops.length;
   const pend = data.stops.filter(s => s.status === 'pendente');
   data.stops.forEach(s => {
-    const done = s.status === 'entregue', pi = pend.indexOf(s), n = ordersOf(s.id).length;
+    const done = s.status === 'entregue', pi = pend.indexOf(s);
     ul.append(h('li', { class: 'stop' + (done ? ' done' : '') },
       h('span', { class: 'n' }, done ? '✓' : s.order),
       h('div', {},
         h('div', { class: 'who' }, s.code ? h('span', { class: 'code' }, s.code) : null, s.client),
         h('div', { class: 'addr' }, s.address),
-        (s.geoStatus !== 'ok' || n || (!done && s.etaMin != null)) ? h('div', { class: 'chips', style: 'margin-top:4px' },
+        (s.geoStatus !== 'ok' || (!done && s.etaMin != null)) ? h('div', { class: 'chips', style: 'margin-top:4px' },
           s.geoStatus === 'pendente' ? h('span', { class: 'chip' }, 'Localizando…') : null,
           s.geoStatus === 'falhou' ? h('span', { class: 'chip warn' }, 'Endereço não localizado no mapa') : null,
-          !done && s.etaMin != null ? h('span', { class: 'chip' }, 'em ' + fmtMin(s.etaMin)) : null,
-          n ? h('span', { class: 'chip ok' }, n + (n > 1 ? ' pedidos' : ' pedido')) : null) : null,
+          !done && s.etaMin != null ? h('span', { class: 'chip' }, 'em ' + fmtMin(s.etaMin)) : null) : null,
         h('div', { class: 'acts' },
-          h('button', { class: 'btn small', type: 'button', onclick: () => openOrder(s) }, 'Pedido'),
           !done ? h('button', { class: 'btn small icon', type: 'button', 'aria-label': 'Subir ' + s.client, title: 'Subir', disabled: pi <= 0, onclick: ev => move(s, -1, ev.currentTarget) }, '↑') : null,
           !done ? h('button', { class: 'btn small icon', type: 'button', 'aria-label': 'Descer ' + s.client, title: 'Descer', disabled: pi >= pend.length - 1, onclick: ev => move(s, 1, ev.currentTarget) }, '↓') : null,
           !done && s.canRemove ? h('button', { class: 'btn small icon', type: 'button', 'aria-label': 'Tirar ' + s.client + ' da rota', title: 'Tirar da rota', onclick: ev => removeStop(s, ev.currentTarget) }, '×') : null))));
   });
-  $('#routehint').textContent = pend.length > 1 ? 'Use ↑ e ↓ para mudar a ordem das visitas. A rota no mapa do escritório é refeita na hora.' : '';
-}
-function renderOrders() {
-  const box = $('#orders'); box.replaceChildren();
-  $('#ordersbox').hidden = !data.orders.length;
-  let total = 0;
-  for (const o of data.orders) {
-    total += o.total;
-    box.append(h('div', { class: 'order' },
-      h('div', { class: 'top' }, h('b', {}, 'Nº ' + o.num + ' · ' + o.client), h('span', { class: 'tot' }, brl(o.total))),
-      h('ul', {}, o.items.map(it => h('li', {}, fmtQty(it.qty) + (it.unit ? ' ' + it.unit : '') + ' × ' + it.desc + (it.price != null ? ' (' + brl(it.price) + ')' : '')))),
-      o.notes ? h('div', { class: 'muted' }, 'Obs.: ' + o.notes) : null,
-      h('div', { class: 'chips', style: 'align-items:center' },
-        h('span', { class: 'chip' + (o.status === 'conferido' ? ' ok' : '') }, o.status === 'conferido' ? 'Conferido pelo escritório' : 'Enviado às ' + hour(o.createdAt)),
-        o.status === 'novo' ? h('button', { class: 'linkbtn', type: 'button', style: 'padding:0 0 0 6px;font-size:14px', onclick: () => removeOrder(o) }, 'Cancelar pedido') : null)));
-  }
-  $('#ordtotal').textContent = brl(total);
+  const canOpt = pend.filter(s => s.geoStatus === 'ok').length >= 2;
+  $('#btn-opt').hidden = !canOpt;
+  if (!canOpt) $('#optnote').hidden = true;
+  $('#routehint').textContent = pend.length > 1 ? 'Use ↑ e ↓ para mudar a ordem das visitas, ou "Otimizar minha rota" para o sistema escolher a ordem mais curta. A rota no mapa do escritório é refeita na hora.' : '';
 }
 async function deliver(s, btn) {
   btn.disabled = true;
@@ -230,11 +173,6 @@ async function removeStop(s, btn) {
   btn.disabled = true;
   try { await call('stop-remove', { id: s.id }); await load(); } catch (e) { say(e.message); btn.disabled = false; }
 }
-async function removeOrder(o) {
-  if (!confirm('Cancelar o pedido Nº ' + o.num + ' de ' + o.client + '?')) return;
-  try { await call('order-remove', { id: o.id }); await load(); } catch (e) { say(e.message); }
-}
-
 /* ---------------- adicionar cliente à rota ---------------- */
 let qTimer = null, qSeq = 0;
 $('#q').addEventListener('input', () => {
@@ -278,46 +216,18 @@ $('#btn-addnew').addEventListener('click', async () => {
   } catch (e) { say(e.message); } finally { b.disabled = false; }
 });
 
-/* ---------------- pedido ---------------- */
-let orderStop = null;
-function itemRow(focus) {
-  const row = h('div', { class: 'item' },
-    h('label', {}, h('span', {}, 'Produto'), h('input', { class: 'i-desc', maxlength: 120, placeholder: 'Ex.: Água 20 L' })),
-    h('label', {}, h('span', {}, 'Qtd.'), h('input', { class: 'i-qty', inputmode: 'decimal', value: '1' })),
-    h('label', {}, h('span', {}, 'Preço un.'), h('input', { class: 'i-price', inputmode: 'decimal', placeholder: '0,00' })),
-    h('button', { class: 'del', type: 'button', 'aria-label': 'Remover item', onclick: () => { row.remove(); if (!$('#items').children.length) itemRow(true); updTotal(); } }, '×'));
-  row.addEventListener('input', updTotal);
-  $('#items').append(row);
-  if (focus) row.querySelector('.i-desc').focus();
-}
-function readItems() {
-  return [...document.querySelectorAll('#items .item')].map(r => ({ desc: r.querySelector('.i-desc').value.trim(), qty: parseNum(r.querySelector('.i-qty').value), price: parseNum(r.querySelector('.i-price').value) }))
-    .filter(it => it.desc);
-}
-function updTotal() {
-  const t = readItems().reduce((s, it) => s + (Number.isFinite(it.qty) && Number.isFinite(it.price) ? it.qty * it.price : 0), 0);
-  $('#o-total').textContent = brl(t);
-}
-function openOrder(s) {
-  orderStop = s;
-  $('#dlg-client').textContent = s.client + ' · ' + s.address;
-  $('#items').replaceChildren(); itemRow(false); $('#o-notes').value = ''; $('#o-msg').textContent = ''; updTotal();
-  $('#dlg').showModal(); $('#items .i-desc').focus();
-}
-$('#btn-item').addEventListener('click', () => itemRow(true));
-$('#btn-ocancel').addEventListener('click', () => $('#dlg').close());
-$('#oform').addEventListener('submit', async e => {
-  e.preventDefault();
-  const items = readItems();
-  if (!items.length) { $('#o-msg').textContent = 'Inclua ao menos um produto.'; return; }
-  const bad = items.find(it => !(it.qty > 0) || Number.isNaN(it.price));
-  if (bad) { $('#o-msg').textContent = 'Confira a quantidade e o preço de "' + bad.desc + '".'; return; }
-  const b = $('#btn-osave'); b.disabled = true;
+/* ---------------- otimizar a rota ---------------- */
+$('#btn-opt').addEventListener('click', async () => {
+  const b = $('#btn-opt'); b.disabled = true; b.textContent = 'Calculando…';
   try {
-    const o = await call('order', { stopId: orderStop.id, items, notes: $('#o-notes').value.trim() });
-    $('#dlg').close(); say('Pedido Nº ' + o.num + ' enviado ao escritório.');
+    const r = await call('optimize', {});
+    const saved = r.beforeKm - r.afterKm, note = $('#optnote');
+    note.textContent = 'Rota otimizada ' + (r.fromGps ? 'a partir de onde você está' : 'a partir do depósito') + ': ' + r.stops + ' paradas, cerca de ' + fmtKm(r.afterKm) +
+      (saved > 0.05 ? ' (' + fmtKm(saved) + ' a menos que antes).' : ' (a ordem já era a melhor).') +
+      (r.unlocated ? ' ' + r.unlocated + ' sem endereço localizado ficaram no fim.' : '') + (r.fromGps ? '' : ' Compartilhe a localização para otimizar a partir de onde você está.');
+    note.hidden = false; say('');
     await load();
-  } catch (err) { $('#o-msg').textContent = err.message; } finally { b.disabled = false; }
+  } catch (e) { say(e.message); } finally { b.disabled = false; b.textContent = 'Otimizar minha rota'; }
 });
 
 /* ---------------- GPS ---------------- */
@@ -343,7 +253,7 @@ function startGps() {
 $('#btn-gps').addEventListener('click', startGps);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && sharing && navigator.wakeLock) navigator.wakeLock.request('screen').then(l => { wake = l; }).catch(() => {}); });
 setInterval(() => { if (sharing && lastPos && Date.now() - lastSent > 20000) send(); }, 5000);
-setInterval(() => { if (!$('#dlg').open) load(); }, 20000);
+setInterval(load, 20000);
 load();
 </script>
 </body>
